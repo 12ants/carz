@@ -18,13 +18,15 @@ const TRACK_WIDTH = 1200;
 const TRACK_HEIGHT = 850;
 
 // Car physics constants
-const ACCELERATION = 0.08;
-const MAX_SPEED = 2.8;
-const NITRO_SPEED = 4.5;
-const NITRO_ACCEL = 0.15;
-const FRICTION = 0.96;
-const TURN_SPEED = 0.045;
-const DRIFT_FACTOR = 0.94;
+const ACCELERATION = 0.12;
+const MAX_SPEED = 3.2;
+const NITRO_SPEED = 5.5;
+const NITRO_ACCEL = 0.25;
+const FRICTION = 0.97;
+const TURN_SPEED = 0.06;
+const DRIFT_FACTOR = 0.96;
+const GRAVITY = 0.6;
+const JUMP_FORCE = 1.2;
 
 // Track Geometry
 const TRACK_RADIUS = 50; // Slightly narrower for more technical turns
@@ -365,12 +367,14 @@ const GameScene = ({
   localPlayerRef, 
   players, 
   myId,
-  showCompass
+  showCompass,
+  freeCam
 }: { 
   localPlayerRef: React.MutableRefObject<any>, 
   players: Record<string, Player>, 
   myId: string | null,
-  showCompass: boolean
+  showCompass: boolean,
+  freeCam: boolean
 }) => {
   const { camera } = useThree();
   const carRef = useRef<THREE.Group>(null);
@@ -403,7 +407,7 @@ const GameScene = ({
   }, []);
   
   useFrame((state, delta) => {
-    if (localPlayerRef.current && carRef.current) {
+    if (localPlayerRef.current && carRef.current && !freeCam) {
       const p = localPlayerRef.current;
       
       if (p.isWalking) {
@@ -428,8 +432,29 @@ const GameScene = ({
           camera.lookAt(p.x, charH, p.y);
       } else {
           const carH = getTerrainHeight(p.x, p.y);
-          carRef.current.position.set(p.x, carH, p.y);
+          carRef.current.position.set(p.x, p.z ?? carH, p.y);
           carRef.current.rotation.y = -p.angle + Math.PI/2;
+          
+          // Tilt car based on terrain/air
+          if (p.z && p.z > (getTerrainHeight(p.x, p.y) + 1)) {
+              // In air - slight nose dive or stabilize
+              carRef.current.rotation.x = THREE.MathUtils.lerp(carRef.current.rotation.x, -0.1, 0.05);
+              carRef.current.rotation.z = THREE.MathUtils.lerp(carRef.current.rotation.z, 0, 0.05);
+          } else {
+              // On ground - align with terrain normal (simplified)
+              // We can sample 3 points to get normal, but for now just flat or simple tilt
+              // Let's just reset X/Z rotation for stability
+              carRef.current.rotation.x = 0;
+              carRef.current.rotation.z = 0;
+              
+              // Add drift tilt
+              if (p.drifting) {
+                  // Tilt opposite to turn? or into turn?
+                  // Usually cars lean outside the turn
+                  // We need to know turn direction.
+                  // Simplified: just a bit of roll
+              }
+          }
           
           if (charRef.current) {
               charRef.current.visible = false;
@@ -437,7 +462,7 @@ const GameScene = ({
           
           // Camera Follow
           const dist = 40;
-          const height = carH + 20;
+          const height = (p.z ?? carH) + 20;
           let targetCamX = p.x - Math.cos(p.angle) * dist;
           let targetCamZ = p.y - Math.sin(p.angle) * dist;
           
@@ -551,24 +576,34 @@ const GameScene = ({
 export default function GameCanvas({ 
   initialPlayers, 
   onExitGame,
-  settings
+  settings,
+  setSettings,
+  isSinglePlayer = false
 }: { 
   initialPlayers?: Record<string, Player>, 
   onExitGame: () => void,
-  settings: { volume: number, showCompass: boolean, showLog: boolean }
+  settings: { volume: number, showCompass: boolean, showLog: boolean },
+  setSettings?: React.Dispatch<React.SetStateAction<any>>,
+  isSinglePlayer?: boolean
 }) {
   // Sound Effects
   const { play: playEngine, stop: stopEngine, setVolume: setEngineVolume } = useSound('/sounds/engine_loop.mp3', { loop: true, volume: 0.3 * (settings.volume / 100) });
   const { play: playDrift, stop: stopDrift, setVolume: setDriftVolume } = useSound('/sounds/drift.mp3', { volume: 0.7 * (settings.volume / 100) });
   const { play: playNitro, setVolume: setNitroVolume } = useSound('/sounds/nitro.mp3', { volume: 0.8 * (settings.volume / 100) });
   const { play: playCollision, setVolume: setCollisionVolume } = useSound('/sounds/collision.mp3', { volume: 0.9 * (settings.volume / 100) });
+  const { play: playPickup } = useSound('/sounds/pickup.mp3', { volume: 0.8 * (settings.volume / 100) });
+  const { play: playDelivery } = useSound('/sounds/delivery.mp3', { volume: 0.9 * (settings.volume / 100) });
+  const { play: playFootsteps, stop: stopFootsteps } = useSound('/sounds/footsteps.mp3', { loop: true, volume: 0.5 * (settings.volume / 100) });
+  const { play: playWind, stop: stopWind, setVolume: setWindVolume } = useSound('/sounds/ambient_wind.mp3', { loop: true, volume: 0 });
+  const { play: playNature, stop: stopNature, setVolume: setNatureVolume } = useSound('/sounds/ambient_nature.mp3', { loop: true, volume: 0.2 * (settings.volume / 100) });
 
   useEffect(() => {
     setEngineVolume(0.3 * (settings.volume / 100));
     setDriftVolume(0.7 * (settings.volume / 100));
     setNitroVolume(0.8 * (settings.volume / 100));
     setCollisionVolume(0.9 * (settings.volume / 100));
-  }, [settings.volume, setEngineVolume, setDriftVolume, setNitroVolume, setCollisionVolume]);
+    setNatureVolume(0.2 * (settings.volume / 100));
+  }, [settings.volume, setEngineVolume, setDriftVolume, setNitroVolume, setCollisionVolume, setNatureVolume]);
 
   // Sanitize initial players
   const sanitizedInitial = useMemo(() => {
@@ -580,7 +615,7 @@ export default function GameCanvas({
   }, [initialPlayers]);
 
   const [players, setPlayers] = useState<Record<string, Player>>(sanitizedInitial);
-  const [myId, setMyId] = useState<string | null>(socket.id || null);
+  const [myId, setMyId] = useState<string | null>(isSinglePlayer ? 'local-player' : (socket.id || null));
   const [laps, setLaps] = useState(0);
   const [lastLapTime, setLastLapTime] = useState<number | null>(null);
   const [currentLapStart, setCurrentLapStart] = useState<number>(Date.now());
@@ -588,6 +623,7 @@ export default function GameCanvas({
   const [wrongWay, setWrongWay] = useState(false);
   const [showDebugger, setShowDebugger] = useState(false);
   const [showPhone, setShowPhone] = useState(false);
+  const [freeCam, setFreeCam] = useState(false);
   const timerRef = useRef<HTMLDivElement>(null);
   const fpsRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(performance.now());
@@ -635,6 +671,8 @@ export default function GameCanvas({
     score: number;
     hasGoods: boolean;
     targetZoneIndex: number;
+    z: number;
+    vz: number;
   }>({
     x: 660,
     y: 750,
@@ -655,6 +693,8 @@ export default function GameCanvas({
     score: 0,
     hasGoods: false,
     targetZoneIndex: 0,
+    z: 0,
+    vz: 0,
   });
 
   // Initialize local player position from props if available
@@ -680,93 +720,104 @@ export default function GameCanvas({
 
   useEffect(() => {
     // Socket event listeners
-    socket.on('connect', () => {
-      setMyId(socket.id || null);
-    });
-
-    // 'currentPlayers' and 'newPlayer' are handled in Lobby now.
-    // We only need game-specific updates here.
-    
-    socket.on('playerJoinedRoom', (player: unknown) => {
-      const p = player as Player;
-      setPlayers((prev) => ({ ...prev, [p.id]: { ...p, score: p.score || 0 } }));
-      addLog(`${p.name} joined the race`, 'text-blue-400');
-    });
-
-    socket.on('playerMoved', (player: unknown) => {
-      const p = player as Player;
-      setPlayers((prev) => {
-        // Don't update local player from server to avoid jitter
-        if (p.id === socket.id) return prev;
-        return { ...prev, [p.id]: { ...p, score: p.score || 0 } };
+    if (!isSinglePlayer) {
+      socket.on('connect', () => {
+        setMyId(socket.id || null);
       });
-    });
-    
-    socket.on('deliveryUpdate', (data: {id: string, score: number, hasGoods: boolean, targetZoneIndex: number}) => {
-        setPlayers(prev => {
-            if (!prev[data.id]) return prev;
-            
-            // If this is local player, only update if server score is BETTER or EQUAL to local score
-            // This prevents overwriting optimistic update with stale server data
-            if (data.id === socket.id) {
-                 const currentScore = prev[data.id].score || 0;
-                 if (data.score < currentScore) {
-                     // Server sent worse score than we have locally? Ignore it.
-                     return prev;
-                 }
-            } else {
-                // Log remote player delivery
-                if (data.score > (prev[data.id].score || 0)) {
-                    addLog(`${prev[data.id].name} made a delivery!`, 'text-green-400');
-                } else if (data.hasGoods && !prev[data.id].hasGoods) {
-                    addLog(`${prev[data.id].name} picked up goods`, 'text-yellow-400');
-                }
-            }
 
-            return {
-                ...prev,
-                [data.id]: {
-                    ...prev[data.id],
-                    score: data.score,
-                    hasGoods: data.hasGoods,
-                    targetZoneIndex: data.targetZoneIndex
-                }
-            };
+      socket.on('playerJoinedRoom', (player: unknown) => {
+        const p = player as Player;
+        setPlayers((prev) => ({ ...prev, [p.id]: { ...p, score: p.score || 0 } }));
+        addLog(`${p.name} joined the race`, 'text-blue-400');
+      });
+
+      socket.on('playerMoved', (player: unknown) => {
+        const p = player as Player;
+        setPlayers((prev) => {
+          // Don't update local player from server to avoid jitter
+          if (p.id === socket.id) return prev;
+          return { ...prev, [p.id]: { ...p, score: p.score || 0 } };
         });
-    });
-
-    socket.on('playerDisconnected', (id: string) => {
-      setPlayers((prev) => {
-        const next = { ...prev };
-        if (next[id]) {
-            addLog(`${next[id].name} left the race`, 'text-slate-400');
-        }
-        delete next[id];
-        return next;
       });
-    });
+      
+      socket.on('deliveryUpdate', (data: {id: string, score: number, hasGoods: boolean, targetZoneIndex: number}) => {
+          setPlayers(prev => {
+              if (!prev[data.id]) return prev;
+              
+              // If this is local player, only update if server score is BETTER or EQUAL to local score
+              // This prevents overwriting optimistic update with stale server data
+              if (data.id === socket.id) {
+                   const currentScore = prev[data.id].score || 0;
+                   if (data.score < currentScore) {
+                       // Server sent worse score than we have locally? Ignore it.
+                       return prev;
+                   }
+              } else {
+                  // Log remote player delivery
+                  if (data.score > (prev[data.id].score || 0)) {
+                      addLog(`${prev[data.id].name} made a delivery!`, 'text-green-400');
+                  } else if (data.hasGoods && !prev[data.id].hasGoods) {
+                      addLog(`${prev[data.id].name} picked up goods`, 'text-yellow-400');
+                  }
+              }
+
+              return {
+                  ...prev,
+                  [data.id]: {
+                      ...prev[data.id],
+                      score: data.score,
+                      hasGoods: data.hasGoods,
+                      targetZoneIndex: data.targetZoneIndex
+                  }
+              };
+          });
+      });
+
+      socket.on('playerDisconnected', (id: string) => {
+        setPlayers((prev) => {
+          const next = { ...prev };
+          if (next[id]) {
+              addLog(`${next[id].name} left the race`, 'text-slate-400');
+          }
+          delete next[id];
+          return next;
+        });
+      });
+    }
+
+    // Start ambient sounds
+    playWind();
+    playNature();
 
     return () => {
-      socket.off('connect');
-      socket.off('playerJoinedRoom');
-      socket.off('playerMoved');
-      socket.off('playerDisconnected');
-      socket.off('deliveryUpdate');
+      if (!isSinglePlayer) {
+        socket.off('connect');
+        socket.off('playerJoinedRoom');
+        socket.off('playerMoved');
+        socket.off('playerDisconnected');
+        socket.off('deliveryUpdate');
+      }
       stopEngine();
       stopDrift();
+      stopFootsteps();
+      stopWind();
+      stopNature();
     };
-  }, []);
+  }, [isSinglePlayer]);
 
   // Input handling
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       localPlayer.current.keys[e.code] = true;
-      if (e.code === 'Backquote') {
+      if (e.code === 'Digit0') {
         setShowDebugger(prev => !prev);
       }
       if (e.code === 'Tab') {
         e.preventDefault();
         setShowPhone(prev => !prev);
+      }
+      if (e.code === 'KeyC') {
+        setFreeCam(prev => !prev);
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -787,6 +838,7 @@ export default function GameCanvas({
     let animationFrameId: number;
     let enginePlaying = false;
     let driftPlaying = false;
+    let footstepsPlaying = false;
 
     const updatePhysics = () => {
       const now = performance.now();
@@ -852,6 +904,19 @@ export default function GameCanvas({
           p.x += dx;
           p.y += dy;
           p.speed = Math.hypot(dx, dy);
+
+          if (p.speed > 0.1) {
+              if (!footstepsPlaying) {
+                  playFootsteps();
+                  footstepsPlaying = true;
+              }
+          } else {
+              if (footstepsPlaying) {
+                  stopFootsteps();
+                  footstepsPlaying = false;
+              }
+          }
+
           p.nitro = Math.min(100, p.nitro + 0.2); // recharge nitro while walking
           setNitro(p.nitro);
           p.drifting = false;
@@ -861,6 +926,10 @@ export default function GameCanvas({
           }
       } else {
           // Engine Sound
+          if (footstepsPlaying) {
+              stopFootsteps();
+              footstepsPlaying = false;
+          }
           if (!enginePlaying) {
               playEngine();
               enginePlaying = true;
@@ -922,8 +991,8 @@ export default function GameCanvas({
             let turn = TURN_SPEED * (p.speed / MAX_SPEED);
             
             if (p.drifting) {
-                turn *= 1.6;
-                p.speed *= 0.97;
+                turn *= 2.2; // Much sharper turning while drifting
+                p.speed *= 0.99; // Less speed loss while drifting
                 p.shake = Math.min(p.shake + 0.2, 1.5); // Add shake when drifting
                 
                 if (Math.random() > 0.5) {
@@ -953,6 +1022,77 @@ export default function GameCanvas({
           p.carX = p.x;
           p.carY = p.y;
           p.carAngle = p.angle;
+          
+          // Vertical Physics (Air/Jumps)
+          const terrainH = getTerrainHeight(p.x, p.y);
+          p.vz -= GRAVITY;
+          p.z += p.vz;
+          
+          // Ground Collision
+          if (p.z <= terrainH) {
+              p.z = terrainH;
+              p.vz = 0;
+              
+              // Ramp / Jump Logic
+              // Look ahead to see if we are hitting a ramp
+              const lookAhead = 15;
+              const nextX = p.x + Math.cos(p.angle) * lookAhead;
+              const nextY = p.y + Math.sin(p.angle) * lookAhead;
+              const nextH = getTerrainHeight(nextX, nextY);
+              const slope = nextH - terrainH;
+              
+              if (slope > 2 && p.speed > 1.5) {
+                  // Launch off the ramp
+                  p.vz = Math.min(slope * 0.15 * p.speed, 3.0);
+              }
+          }
+      }
+
+      // Single Player Game Logic
+      if (isSinglePlayer) {
+          // Check for Pickup
+          if (!p.hasGoods) {
+              const pickupZone = DELIVERY_ZONES[0]; // Assuming first zone is pickup for simplicity or random
+              // Actually, let's use the targetZoneIndex logic
+              // In single player, we need to manage the target zone locally
+              
+              // If we don't have a target, set one
+              // But wait, p.targetZoneIndex is already in local state
+              
+              const currentZone = DELIVERY_ZONES[p.targetZoneIndex];
+              const dist = Math.hypot(p.x - currentZone.x, p.y - currentZone.y);
+              
+              if (dist < 20) {
+                  p.hasGoods = true;
+                  addLog('Goods Collected! Deliver them!', 'text-yellow-400');
+                  playPickup();
+                  
+                  // Pick a new random delivery zone different from current
+                  let nextIndex;
+                  do {
+                      nextIndex = Math.floor(Math.random() * DELIVERY_ZONES.length);
+                  } while (nextIndex === p.targetZoneIndex);
+                  p.targetZoneIndex = nextIndex;
+              }
+          } else {
+              // Check for Delivery
+              const currentZone = DELIVERY_ZONES[p.targetZoneIndex];
+              const dist = Math.hypot(p.x - currentZone.x, p.y - currentZone.y);
+              
+              if (dist < 20) {
+                  p.hasGoods = false;
+                  p.score += 100;
+                  addLog('Delivery Successful! +100 Points', 'text-green-400');
+                  playDelivery();
+                  
+                  // Pick a new random pickup zone
+                  let nextIndex;
+                  do {
+                      nextIndex = Math.floor(Math.random() * DELIVERY_ZONES.length);
+                  } while (nextIndex === p.targetZoneIndex);
+                  p.targetZoneIndex = nextIndex;
+              }
+          }
       }
 
       // Update Particles
@@ -990,48 +1130,52 @@ export default function GameCanvas({
         }
       }
 
-      // Delivery Logic
-      const targetZone = DELIVERY_ZONES[p.targetZoneIndex];
-      if (targetZone) {
-          const distToZone = Math.hypot(p.x - targetZone.x, p.y - targetZone.y);
-          if (distToZone < 40) { // Zone radius
-              // Reached target!
-              if (p.hasGoods) {
-                  p.score += 1;
-                  p.hasGoods = false;
-                  addLog('Delivery successful! +1 Point', 'text-green-400');
-              } else {
-                  p.hasGoods = true;
-                  addLog('Goods picked up! Deliver them to the next zone.', 'text-yellow-400');
-              }
-              
-              // Pick a new random zone that isn't the current one
-              let newZoneIndex = p.targetZoneIndex;
-              while (newZoneIndex === p.targetZoneIndex) {
-                  newZoneIndex = Math.floor(Math.random() * DELIVERY_ZONES.length);
-              }
-              p.targetZoneIndex = newZoneIndex;
+      // Delivery Logic (Multiplayer Only - Single Player Handled Above)
+      if (!isSinglePlayer) {
+          const targetZone = DELIVERY_ZONES[p.targetZoneIndex];
+          if (targetZone) {
+              const distToZone = Math.hypot(p.x - targetZone.x, p.y - targetZone.y);
+              if (distToZone < 40) { // Zone radius
+                  // Reached target!
+                  if (p.hasGoods) {
+                      p.score += 1;
+                      p.hasGoods = false;
+                      addLog('Delivery successful! +1 Point', 'text-green-400');
+                      playDelivery();
+                  } else {
+                      p.hasGoods = true;
+                      addLog('Goods picked up! Deliver them to the next zone.', 'text-yellow-400');
+                      playPickup();
+                  }
+                  
+                  // Pick a new random zone that isn't the current one
+                  let newZoneIndex = p.targetZoneIndex;
+                  while (newZoneIndex === p.targetZoneIndex) {
+                      newZoneIndex = Math.floor(Math.random() * DELIVERY_ZONES.length);
+                  }
+                  p.targetZoneIndex = newZoneIndex;
 
-              // Emit update to server
-              socket.emit('deliveryUpdate', {
-                  score: p.score,
-                  hasGoods: p.hasGoods,
-                  targetZoneIndex: p.targetZoneIndex
-              });
-              
-              // Optimistically update local player
-              setPlayers(prev => {
-                  if (!myId || !prev[myId]) return prev;
-                  return {
-                      ...prev,
-                      [myId]: {
-                          ...prev[myId],
-                          score: p.score,
-                          hasGoods: p.hasGoods,
-                          targetZoneIndex: p.targetZoneIndex
-                      }
-                  };
-              });
+                  // Emit update to server
+                  socket.emit('deliveryUpdate', {
+                      score: p.score,
+                      hasGoods: p.hasGoods,
+                      targetZoneIndex: p.targetZoneIndex
+                  });
+                  
+                  // Optimistically update local player
+                  setPlayers(prev => {
+                      if (!myId || !prev[myId]) return prev;
+                      return {
+                          ...prev,
+                          [myId]: {
+                              ...prev[myId],
+                              score: p.score,
+                              hasGoods: p.hasGoods,
+                              targetZoneIndex: p.targetZoneIndex
+                          }
+                      };
+                  });
+              }
           }
       }
 
@@ -1041,7 +1185,7 @@ export default function GameCanvas({
       if (wrongWay) setWrongWay(false);
 
       // Send update
-      if (socket.connected) {
+      if (!isSinglePlayer && socket.connected) {
         socket.emit('playerMovement', {
           x: p.x,
           y: p.y,
@@ -1054,7 +1198,38 @@ export default function GameCanvas({
           carY: p.carY,
           carAngle: p.carAngle
         });
+      } else if (isSinglePlayer && myId) {
+          // In single player, just update the state directly for UI
+          setPlayers(prev => ({
+              ...prev,
+              [myId]: {
+                  ...prev[myId],
+                  x: p.x,
+                  y: p.y,
+                  angle: p.angle,
+                  speed: p.speed,
+                  nitro: p.nitro,
+                  drifting: p.drifting,
+                  isWalking: p.isWalking,
+                  carX: p.carX,
+                  carY: p.carY,
+                  carAngle: p.carAngle,
+                  score: p.score,
+                  hasGoods: p.hasGoods,
+                  targetZoneIndex: p.targetZoneIndex
+              }
+          }));
       }
+
+      // Update Ambient Volumes based on height
+      const h = getTerrainHeight(p.x, p.y);
+      const masterVol = settings.volume / 100;
+      // Wind gets louder as you go higher
+      const windVol = Math.min(0.8, Math.max(0, (h - 20) / 60)) * masterVol;
+      setWindVolume(windVol);
+      // Nature gets slightly quieter as you go very high
+      const natureVol = Math.max(0.05, 0.2 - Math.max(0, (h - 40) / 100)) * masterVol;
+      setNatureVolume(natureVol);
 
       animationFrameId = requestAnimationFrame(updatePhysics);
     };
@@ -1067,12 +1242,12 @@ export default function GameCanvas({
   }, [currentLapStart]);
 
   return (
-    <div className="relative w-full h-[850px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border-4 border-slate-700">
+    <div className="relative w-full h-full bg-slate-900 overflow-hidden">
       <Canvas shadows>
         <color attach="background" args={['#0f172a']} />
         <PerspectiveCamera makeDefault position={[0, 50, 50]} fov={60} far={1000} />
         <fog attach="fog" args={['#0f172a', 100, 900]} />
-        <GameScene localPlayerRef={localPlayer} players={players} myId={myId} showCompass={settings.showCompass} />
+        <GameScene localPlayerRef={localPlayer} players={players} myId={myId} showCompass={settings.showCompass} freeCam={freeCam} />
         
         {/* Particles */}
         {particles.map(pt => (
@@ -1082,49 +1257,58 @@ export default function GameCanvas({
             </mesh>
         ))}
 
-        <OrbitControls enabled={false} />
+        <OrbitControls enabled={freeCam} />
       </Canvas>
       
       {/* HUD Overlay */}
       
       {/* Top Left: Exit Game Button */}
-      <div className="absolute top-6 left-6 pointer-events-auto">
+      <div className="absolute top-4 left-4 pointer-events-auto z-50">
         <button
           onClick={onExitGame}
-          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-white font-bold transition-colors shadow-lg border border-white/10"
+          className="px-3 py-1.5 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-lg text-xs text-white font-bold transition-all shadow-lg border border-white/10 flex items-center gap-2"
         >
-          Back to Menu
+          <span className="opacity-60">←</span> Back to Menu
         </button>
       </div>
 
       {/* Top Right: Cash & Phone Prompt */}
-      <div className="absolute top-6 right-6 flex flex-col items-end gap-4 pointer-events-none">
-          <div className="bg-black/50 text-white px-6 py-3 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-4 shadow-lg">
+      <div className="absolute top-4 right-4 sm:top-6 sm:right-6 flex flex-col items-end gap-2 sm:gap-4 pointer-events-none">
+          <div className="bg-black/50 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-3 sm:gap-4 shadow-lg">
               <div className="text-right">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider font-bold">Cash</div>
-                  <div className="text-2xl font-mono font-bold text-green-400 leading-none">
+                  <div className="text-[10px] sm:text-xs text-slate-400 uppercase tracking-wider font-bold">Cash</div>
+                  <div className="text-lg sm:text-2xl font-mono font-bold text-green-400 leading-none">
                       ${(players[socket.id || '']?.score || 0) * 100}
                   </div>
               </div>
           </div>
-          
-          <div className="bg-black/50 text-white px-4 py-2 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-3 shadow-lg">
-              <div className="w-6 h-10 bg-slate-800 rounded-md border-2 border-slate-600 flex items-center justify-center">
-                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+
+          <div className="bg-black/50 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-xl border border-white/10 backdrop-blur-md flex flex-col items-end shadow-lg">
+              <div className={`text-[10px] sm:text-xs font-bold uppercase tracking-widest ${players[socket.id || '']?.hasGoods ? 'text-green-400' : 'text-blue-400'}`}>
+                  {players[socket.id || '']?.hasGoods ? 'Deliver To' : 'Pickup At'}
               </div>
-              <div className="text-sm font-bold text-slate-300">
-                  Press <span className="text-yellow-400 font-mono bg-black/50 px-2 py-1 rounded">TAB</span> for Phone
+              <div className="text-sm sm:text-lg font-bold text-white">
+                  {DELIVERY_ZONES[players[socket.id || '']?.targetZoneIndex || 0]?.name}
+              </div>
+          </div>
+          
+          <div className="bg-black/50 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-2 sm:gap-3 shadow-lg">
+              <div className="w-5 h-8 sm:w-6 sm:h-10 bg-slate-800 rounded-md border-2 border-slate-600 flex items-center justify-center">
+                  <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-blue-500 animate-pulse"></div>
+              </div>
+              <div className="text-[10px] sm:text-sm font-bold text-slate-300">
+                  Press <span className="text-yellow-400 font-mono bg-black/50 px-1.5 py-0.5 sm:px-2 sm:py-1 rounded">TAB</span> for Phone
               </div>
           </div>
       </div>
 
       {/* Bottom Center: Nitro Bar */}
-      <div className="absolute bottom-10 left-1/2 -translate-x-1/2 pointer-events-none w-80">
-          <div className="flex justify-between text-xs text-slate-400 uppercase tracking-wider font-bold mb-2">
+      <div className="absolute bottom-6 sm:bottom-10 left-1/2 -translate-x-1/2 pointer-events-none w-[80%] max-w-xs">
+          <div className="flex justify-between text-[10px] sm:text-xs text-slate-400 uppercase tracking-wider font-bold mb-1 sm:mb-2">
               <span>Nitro</span>
               <span>{Math.round(nitro)}%</span>
           </div>
-          <div className="w-full h-4 bg-slate-800/50 rounded-full overflow-hidden border border-white/20 backdrop-blur-md">
+          <div className="w-full h-3 sm:h-4 bg-slate-800/50 rounded-full overflow-hidden border border-white/20 backdrop-blur-md">
               <div 
                 className="h-full bg-gradient-to-r from-blue-600 via-blue-400 to-cyan-300 shadow-[0_0_15px_rgba(59,130,246,0.6)]"
                 style={{ width: `${nitro}%` }}
@@ -1138,11 +1322,11 @@ export default function GameCanvas({
 
       {/* Debugger Window */}
       {showDebugger && (
-        <div className="absolute bottom-6 right-6 pointer-events-none z-50">
-          <div className="bg-black/80 text-green-400 p-4 rounded-lg border border-green-500/30 font-mono text-xs w-64 shadow-2xl backdrop-blur-sm">
-            <div className="flex justify-between border-b border-green-500/30 pb-2 mb-2">
-              <span className="font-bold">DEBUGGER</span>
-              <span className="text-green-600">~ to toggle</span>
+        <div className="absolute bottom-4 right-4 sm:bottom-6 sm:right-6 pointer-events-none z-50">
+          <div className="bg-black/80 text-green-400 p-3 sm:p-4 rounded-lg border border-green-500/30 font-mono text-[10px] sm:text-xs w-48 sm:w-64 shadow-2xl backdrop-blur-sm">
+            <div className="flex justify-between border-b border-green-500/30 pb-1 sm:pb-2 mb-1 sm:mb-2">
+              <span className="font-bold uppercase">Debug</span>
+              <span className="text-green-600 opacity-50">0 to toggle</span>
             </div>
             <div className="space-y-1">
               <div className="flex justify-between">
@@ -1180,11 +1364,11 @@ export default function GameCanvas({
 
       {/* Event Log */}
       {settings.showLog && (
-        <div className="absolute top-32 right-6 flex flex-col items-end gap-2 pointer-events-none z-40">
+        <div className="absolute top-16 sm:top-20 right-4 sm:right-6 flex flex-col items-end gap-1 sm:gap-2 pointer-events-none z-40">
           {eventLog.map(log => (
             <div 
               key={log.id} 
-              className={`bg-black/60 px-4 py-2 rounded-lg border border-white/10 backdrop-blur-sm text-sm font-bold shadow-lg transition-all duration-500 animate-in slide-in-from-right-8 fade-in ${log.color}`}
+              className={`bg-black/60 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg border border-white/10 backdrop-blur-sm text-[10px] sm:text-sm font-bold shadow-lg transition-all duration-500 animate-in slide-in-from-right-8 fade-in ${log.color}`}
             >
               {log.message}
             </div>
@@ -1194,7 +1378,7 @@ export default function GameCanvas({
 
       {/* Virtual Phone */}
       {showPhone && (
-        <div className="absolute right-10 bottom-10 w-80 h-[600px] bg-slate-900 rounded-[3rem] border-[8px] border-slate-800 shadow-2xl overflow-hidden flex flex-col pointer-events-auto z-50 transform transition-transform duration-300">
+        <div className="absolute right-4 bottom-4 sm:right-10 sm:bottom-10 w-[280px] sm:w-80 h-[500px] sm:h-[600px] max-h-[80vh] bg-slate-900 rounded-[2.5rem] sm:rounded-[3rem] border-[6px] sm:border-[8px] border-slate-800 shadow-2xl overflow-hidden flex flex-col pointer-events-auto z-50 transform transition-transform duration-300">
           {/* Phone Header */}
           <div className="bg-slate-800 px-6 py-2 flex justify-between items-center text-xs text-slate-400 font-bold">
             <span>{new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
@@ -1265,17 +1449,18 @@ export default function GameCanvas({
           Back to Menu
         </button>
       </div>
-      <div className="absolute bottom-6 left-6 text-white pointer-events-none opacity-50 hover:opacity-100 transition-opacity duration-300">
-        <div className="bg-black/40 p-5 rounded-xl backdrop-blur-md border border-white/10">
-            <h3 className="font-bold text-sm mb-2 text-yellow-400/80">Controls</h3>
-            <ul className="text-xs space-y-1 font-mono text-slate-300">
+      <div className="absolute bottom-4 left-4 sm:bottom-6 sm:left-6 text-white pointer-events-none opacity-40 hover:opacity-100 transition-opacity duration-300 hidden sm:block">
+        <div className="bg-black/40 p-4 sm:p-5 rounded-xl backdrop-blur-md border border-white/10">
+            <h3 className="font-bold text-[10px] sm:text-sm mb-1 sm:mb-2 text-yellow-400/80 uppercase tracking-wider">Controls</h3>
+            <ul className="text-[9px] sm:text-xs space-y-0.5 sm:space-y-1 font-mono text-slate-300">
             <li>W / UP : Accelerate</li>
             <li>S / DOWN : Brake</li>
             <li>A / D  : Turn</li>
             <li>SPACE  : Drift</li>
             <li>SHIFT  : Nitro</li>
             <li>TAB    : Phone</li>
-            <li>~      : Toggle Debugger</li>
+            <li>C      : Free Cam</li>
+            <li>0      : Debugger</li>
             </ul>
         </div>
       </div>
