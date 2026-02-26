@@ -23,9 +23,9 @@ async function startServer() {
     color: string;
     name: string;
     speed: number;
-    laps: number;
-    bestLapTime: number; // milliseconds, Infinity if none
-    lastLapStart: number;
+    score: number;
+    hasGoods: boolean;
+    targetZoneIndex: number;
     nitro: number;
     drifting: boolean;
     isWalking: boolean;
@@ -69,18 +69,18 @@ async function startServer() {
     const startAngle = Math.PI;
     return {
       id,
-      x: startX,
+      x: startX + 10,
       y: startY,
       angle: startAngle,
       color: colorInfo.value,
       name: colorInfo.name,
       speed: 0,
-      laps: 0,
-      bestLapTime: Infinity,
-      lastLapStart: Date.now(),
+      score: 0,
+      hasGoods: false,
+      targetZoneIndex: Math.floor(Math.random() * 6), // 6 zones total
       nitro: 100,
       drifting: false,
-      isWalking: false,
+      isWalking: true,
       carX: startX,
       carY: startY,
       carAngle: startAngle,
@@ -156,23 +156,24 @@ async function startServer() {
           player.carX = movementData.carX;
           player.carY = movementData.carY;
           player.carAngle = movementData.carAngle;
+          player.score = movementData.score;
+          player.hasGoods = movementData.hasGoods;
+          player.targetZoneIndex = movementData.targetZoneIndex;
           
           socket.to(roomId).emit("playerMoved", player);
         }
       }
     });
 
-    socket.on("lapFinished", (lapTime) => {
+    socket.on("deliveryUpdate", (data) => {
       const roomId = socketRoomMap[socket.id];
       if (roomId && rooms[roomId]) {
         const player = rooms[roomId].players[socket.id];
         if (player) {
-          player.laps += 1;
-          if (lapTime < player.bestLapTime) {
-            player.bestLapTime = lapTime;
-          }
-          player.lastLapStart = Date.now();
-          io.to(roomId).emit("lapUpdate", { id: player.id, laps: player.laps, bestLapTime: player.bestLapTime });
+          player.score = data.score;
+          player.hasGoods = data.hasGoods;
+          player.targetZoneIndex = data.targetZoneIndex;
+          io.to(roomId).emit("deliveryUpdate", { id: player.id, score: player.score, hasGoods: player.hasGoods, targetZoneIndex: player.targetZoneIndex });
         }
       }
     });

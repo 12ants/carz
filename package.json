@@ -24,6 +24,7 @@
     "motion": "^12.23.24",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "simplex-noise": "^4.0.3",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "three": "^0.182.0",

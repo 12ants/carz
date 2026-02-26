@@ -3,12 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { socket } from '../services/socket';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerspectiveCamera, Environment, Text, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { createNoise2D } from 'simplex-noise';
 import { Player } from '../types';
+import useSound from '../hooks/useSound';
+
+const noise2D = createNoise2D();
 
 const TRACK_WIDTH = 1200;
 const TRACK_HEIGHT = 850;
@@ -39,6 +43,15 @@ const TRACK_SEGMENTS = [
     { start: {x: 1100, y: 150}, end: {x: 1100, y: 750}, angle: Math.PI/2 },
     { start: {x: 1100, y: 750}, end: {x: 150, y: 750}, angle: Math.PI },
     { start: {x: 150, y: 750}, end: {x: 150, y: 500}, angle: -Math.PI/2 }
+];
+
+const DELIVERY_ZONES = [
+  { x: 300, y: 500, name: 'Factory', color: '#ff00ff' },
+  { x: 300, y: 100, name: 'Warehouse', color: '#00ffff' },
+  { x: 750, y: 250, name: 'Docks', color: '#ffff00' },
+  { x: 775, y: 600, name: 'Store', color: '#ff8800' },
+  { x: 1100, y: 450, name: 'Market', color: '#00ff00' },
+  { x: 625, y: 750, name: 'HQ', color: '#ff0000' },
 ];
 
 // Math helpers for collision
@@ -74,6 +87,28 @@ const isPointOnTrackMath = (x: number, y: number, buffer: number = 0): boolean =
   return minDist <= (TRACK_RADIUS + buffer);
 };
 
+const getTerrainHeight = (x: number, y: number): number => {
+  const p = {x, y};
+  let minDist = Infinity;
+  for (const seg of TRACK_SEGMENTS) {
+    const d = distToSegment(p, seg.start, seg.end);
+    if (d < minDist) minDist = d;
+  }
+  
+  if (minDist <= TRACK_RADIUS) return 0;
+  
+  const blendDist = 60;
+  const distFromEdge = minDist - TRACK_RADIUS;
+  const blend = Math.min(1, distFromEdge / blendDist);
+  
+  const n1 = noise2D(x * 0.002, y * 0.002) * 40 + 20;
+  const n2 = noise2D(x * 0.01, y * 0.01) * 10;
+  const n3 = noise2D(x * 0.05, y * 0.05) * 2;
+  const n4 = Math.max(0, noise2D(x * 0.001, y * 0.001)) * 80;
+  
+  return Math.max(-5, (n1 + n2 + n3 + n4)) * blend;
+};
+
 // 3D Components
 const CarModel = ({ color, isLocal, drifting }: { color: string, isLocal?: boolean, drifting?: boolean }) => {
   return (
@@ -81,52 +116,57 @@ const CarModel = ({ color, isLocal, drifting }: { color: string, isLocal?: boole
       {/* Body */}
       <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
         <boxGeometry args={[2, 1, 4]} />
-        <meshStandardMaterial color={color} metalness={0.6} roughness={0.4} />
+        <meshStandardMaterial color={color} metalness={0.8} roughness={0.3} />
       </mesh>
       {/* Cabin */}
       <mesh position={[0, 1.2, -0.5]} castShadow>
         <boxGeometry args={[1.8, 0.8, 2]} />
-        <meshStandardMaterial color="#333" />
+        <meshStandardMaterial color="#222" metalness={0.7} roughness={0.2} />
+      </mesh>
+      {/* Spoiler */}
+      <mesh position={[0, 1.1, -2.2]} castShadow>
+        <boxGeometry args={[2.2, 0.2, 0.5]} />
+        <meshStandardMaterial color="#111" metalness={0.8} roughness={0.3} />
       </mesh>
       {/* Wheels */}
-      <mesh position={[1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]}>
+      <mesh position={[1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
         <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="black" />
+        <meshStandardMaterial color="#111" roughness={0.6} />
       </mesh>
-      <mesh position={[-1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]}>
+      <mesh position={[-1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
         <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="black" />
+        <meshStandardMaterial color="#111" roughness={0.6} />
       </mesh>
-      <mesh position={[1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]}>
+      <mesh position={[1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
         <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="black" />
+        <meshStandardMaterial color="#111" roughness={0.6} />
       </mesh>
-      <mesh position={[-1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]}>
+      <mesh position={[-1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
         <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="black" />
+        <meshStandardMaterial color="#111" roughness={0.6} />
       </mesh>
       {/* Headlights */}
       <mesh position={[0.6, 0.6, 2.05]}>
         <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="yellow" emissive="yellow" emissiveIntensity={2} />
+        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={3} />
       </mesh>
       <mesh position={[-0.6, 0.6, 2.05]}>
         <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="yellow" emissive="yellow" emissiveIntensity={2} />
+        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={3} />
       </mesh>
       {/* Taillights */}
       <mesh position={[0.6, 0.6, -2.05]}>
         <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="red" emissive="red" emissiveIntensity={1} />
+        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={2} />
       </mesh>
       <mesh position={[-0.6, 0.6, -2.05]}>
         <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="red" emissive="red" emissiveIntensity={1} />
+        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={2} />
       </mesh>
       
       {/* Drift Smoke Particles (Simple visual representation attached to car) */}
       {drifting && (
-        <>
+        <group>
           <mesh position={[1.2, 0.2, -1.5]}>
              <sphereGeometry args={[0.3, 8, 8]} />
              <meshBasicMaterial color="#aaa" transparent opacity={0.6} />
@@ -135,7 +175,7 @@ const CarModel = ({ color, isLocal, drifting }: { color: string, isLocal?: boole
              <sphereGeometry args={[0.3, 8, 8]} />
              <meshBasicMaterial color="#aaa" transparent opacity={0.6} />
           </mesh>
-        </>
+        </group>
       )}
 
       {isLocal && (
@@ -194,6 +234,56 @@ const CharacterModel = ({ color }: { color: string }) => {
   );
 };
 
+const GrassMesh = () => {
+  const geomRef = useRef<THREE.PlaneGeometry>(null);
+  
+  useEffect(() => {
+    if (geomRef.current) {
+      const pos = geomRef.current.attributes.position;
+      const colors = new Float32Array(pos.count * 3);
+      const colorObj = new THREE.Color();
+      
+      for (let i = 0; i < pos.count; i++) {
+        const localX = pos.getX(i);
+        const localY = pos.getY(i);
+        const worldX = localX + TRACK_WIDTH/2;
+        const worldY = localY + TRACK_HEIGHT/2;
+        
+        const h = getTerrainHeight(worldX, worldY);
+        pos.setZ(i, h);
+        
+        if (h < 5) {
+            colorObj.set('#2a5c3a');
+        } else if (h < 20) {
+            colorObj.set('#3a704a');
+        } else if (h < 40) {
+            colorObj.set('#6b705c');
+        } else {
+            colorObj.set('#8a8a8a');
+        }
+        
+        const noise = noise2D(worldX * 0.1, worldY * 0.1) * 0.05;
+        colorObj.offsetHSL(0, 0, noise);
+        
+        colors[i * 3] = colorObj.r;
+        colors[i * 3 + 1] = colorObj.g;
+        colors[i * 3 + 2] = colorObj.b;
+      }
+      
+      geomRef.current.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geomRef.current.computeVertexNormals();
+      pos.needsUpdate = true;
+    }
+  }, []);
+
+  return (
+    <mesh position={[TRACK_WIDTH/2, TRACK_HEIGHT/2, -0.1]} receiveShadow castShadow>
+      <planeGeometry ref={geomRef} args={[3000, 3000, 200, 200]} />
+      <meshStandardMaterial vertexColors roughness={0.9} metalness={0.1} />
+    </mesh>
+  );
+};
+
 const TrackMesh = () => {
   const segments = useMemo(() => {
     return TRACK_SEGMENTS.map((seg, i) => {
@@ -214,16 +304,13 @@ const TrackMesh = () => {
   return (
     <group rotation={[-Math.PI / 2, 0, 0]} scale={[1, -1, 1]}>
       {/* Grass/Off-track */}
-      <mesh position={[TRACK_WIDTH/2, TRACK_HEIGHT/2, -0.1]} receiveShadow>
-        <planeGeometry args={[3000, 3000]} />
-        <meshStandardMaterial color="#1a472a" roughness={1} />
-      </mesh>
+      <GrassMesh />
       
       {/* Track Segments */}
       {segments.map((seg) => (
         <mesh key={seg.id} position={[seg.centerX, seg.centerY, 0.1]} rotation={[0, 0, seg.angle]} receiveShadow>
           <planeGeometry args={[seg.length, TRACK_RADIUS * 2]} />
-          <meshStandardMaterial color="#333" roughness={0.8} />
+          <meshStandardMaterial color="#444" roughness={0.7} metalness={0.2} />
         </mesh>
       ))}
 
@@ -231,14 +318,44 @@ const TrackMesh = () => {
       {corners.map((pos, i) => (
         <mesh key={i} position={[pos.x, pos.y, 0.1]} receiveShadow>
           <circleGeometry args={[TRACK_RADIUS, 32]} />
-          <meshStandardMaterial color="#333" roughness={0.8} />
+          <meshStandardMaterial color="#444" roughness={0.7} metalness={0.2} />
         </mesh>
       ))}
       
       {/* Start Line */}
-      <mesh position={[625, 750, 0.11]} rotation={[0, 0, 0]}>
+      <mesh position={[625, 750, 0.12]} rotation={[0, 0, 0]}>
         <planeGeometry args={[10, TRACK_RADIUS * 2]} />
-        <meshStandardMaterial color="white" />
+        <meshStandardMaterial color="white" emissive="white" emissiveIntensity={0.5} />
+      </mesh>
+    </group>
+  );
+};
+
+const CompassArrow = ({ localPlayerRef }: { localPlayerRef: React.MutableRefObject<any> }) => {
+  const arrowRef = useRef<THREE.Group>(null);
+  
+  useFrame(() => {
+    if (!arrowRef.current || !localPlayerRef.current) return;
+    const p = localPlayerRef.current;
+    const targetZone = DELIVERY_ZONES[p.targetZoneIndex];
+    if (targetZone) {
+      const dx = targetZone.x - p.x;
+      const dy = targetZone.y - p.y;
+      const angleToTarget = Math.atan2(dy, dx);
+      
+      // Position above player
+      const h = getTerrainHeight(p.x, p.y);
+      arrowRef.current.position.set(p.x, h + 15, p.y);
+      // Rotate to point at target (Y axis rotation in 3D)
+      arrowRef.current.rotation.y = -angleToTarget + Math.PI / 2;
+    }
+  });
+
+  return (
+    <group ref={arrowRef}>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[3, 10, 8]} />
+        <meshBasicMaterial color="#00ff00" transparent opacity={0.8} />
       </mesh>
     </group>
   );
@@ -247,11 +364,13 @@ const TrackMesh = () => {
 const GameScene = ({ 
   localPlayerRef, 
   players, 
-  myId 
+  myId,
+  showCompass
 }: { 
   localPlayerRef: React.MutableRefObject<any>, 
   players: Record<string, Player>, 
-  myId: string | null 
+  myId: string | null,
+  showCompass: boolean
 }) => {
   const { camera } = useThree();
   const carRef = useRef<THREE.Group>(null);
@@ -259,7 +378,7 @@ const GameScene = ({
 
   const decorations = useMemo(() => {
     const items: { type: 'tree' | 'rock', pos: [number, number, number], scale: number }[] = [];
-    const count = 350; // Increased for better density
+    const count = 500; // Increased for better density
     const seed = 42;
     const rng = (s: number) => {
         const x = Math.sin(s) * 10000;
@@ -269,14 +388,15 @@ const GameScene = ({
 
     for (let i = 0; i < count; i++) {
       // Area large enough to fill the new draw distance
-      const x = rng(s++) * 2400 - 800; 
-      const z = rng(s++) * 2200 - 800;
+      const x = rng(s++) * 3000 - 900; 
+      const z = rng(s++) * 3000 - 1075;
       
       // Check if on track using the math helper with a buffer to account for decoration size
       if (!isPointOnTrackMath(x, z, 20)) {
         const type = rng(s++) > 0.4 ? 'tree' : 'rock';
         const scale = type === 'tree' ? 2.5 + rng(s++) * 3.5 : 3 + rng(s++) * 5;
-        items.push({ type, pos: [x, 0, z], scale });
+        const y = getTerrainHeight(x, z);
+        items.push({ type, pos: [x, y, z], scale });
       }
     }
     return items;
@@ -287,24 +407,28 @@ const GameScene = ({
       const p = localPlayerRef.current;
       
       if (p.isWalking) {
-          carRef.current.position.set(p.carX, 0, p.carY);
+          const carH = getTerrainHeight(p.carX, p.carY);
+          const charH = getTerrainHeight(p.x, p.y);
+          
+          carRef.current.position.set(p.carX, carH, p.carY);
           carRef.current.rotation.y = -p.carAngle + Math.PI/2;
           
           if (charRef.current) {
               charRef.current.visible = true;
-              charRef.current.position.set(p.x, 0, p.y);
+              charRef.current.position.set(p.x, charH, p.y);
               charRef.current.rotation.y = -p.angle + Math.PI/2;
           }
           
           // Camera Follow
           const dist = 20;
-          const height = 15;
+          const height = charH + 15;
           const targetCamX = p.x - Math.cos(p.angle) * dist;
           const targetCamZ = p.y - Math.sin(p.angle) * dist;
           camera.position.lerp(new THREE.Vector3(targetCamX, height, targetCamZ), 0.1);
-          camera.lookAt(p.x, 0, p.y);
+          camera.lookAt(p.x, charH, p.y);
       } else {
-          carRef.current.position.set(p.x, 0, p.y);
+          const carH = getTerrainHeight(p.x, p.y);
+          carRef.current.position.set(p.x, carH, p.y);
           carRef.current.rotation.y = -p.angle + Math.PI/2;
           
           if (charRef.current) {
@@ -313,7 +437,7 @@ const GameScene = ({
           
           // Camera Follow
           const dist = 40;
-          const height = 20;
+          const height = carH + 20;
           let targetCamX = p.x - Math.cos(p.angle) * dist;
           let targetCamZ = p.y - Math.sin(p.angle) * dist;
           
@@ -324,26 +448,27 @@ const GameScene = ({
           }
           
           camera.position.lerp(new THREE.Vector3(targetCamX, height, targetCamZ), 0.1);
-          camera.lookAt(p.x, 0, p.y);
+          camera.lookAt(p.x, carH, p.y);
       }
     }
   });
 
   return (
     <>
-      <ambientLight intensity={0.5} />
+      <ambientLight intensity={0.6} />
       <directionalLight 
-        position={[600, 300, 425]} 
-        intensity={1} 
+        position={[600, 400, 425]} 
+        intensity={1.2} 
         castShadow 
-        shadow-mapSize={[1024, 1024]}
+        shadow-mapSize={[2048, 2048]}
         shadow-camera-left={-700}
         shadow-camera-right={700}
         shadow-camera-top={700}
         shadow-camera-bottom={-700}
-        shadow-camera-far={1000}
+        shadow-camera-far={1500}
+        shadow-bias={-0.001} // Reduce shadow artifacts
       />
-      <Environment preset="sunset" />
+      <Environment preset="warehouse" />
       
       <TrackMesh />
       
@@ -356,6 +481,28 @@ const GameScene = ({
         )
       ))}
       
+      {/* Delivery Zones */}
+      {DELIVERY_ZONES.map((zone, i) => {
+        const isTarget = localPlayerRef.current?.targetZoneIndex === i;
+        return (
+          <group key={i} position={[zone.x, 0.1, zone.y]}>
+            <mesh rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[20, 32]} />
+              <meshBasicMaterial color={zone.color} transparent opacity={isTarget ? 0.6 : 0.2} />
+            </mesh>
+            {isTarget && (
+              <mesh position={[0, 10, 0]}>
+                <cylinderGeometry args={[15, 15, 20, 16]} />
+                <meshBasicMaterial color={zone.color} transparent opacity={0.3} />
+              </mesh>
+            )}
+            <Text position={[0, 5, 0]} fontSize={4} color="white" anchorX="center" anchorY="middle" outlineWidth={0.2} outlineColor="black">
+              {zone.name}
+            </Text>
+          </group>
+        );
+      })}
+
       {/* Local Player */}
       <group ref={carRef}>
         <CarModel color={players[myId || '']?.color || 'red'} isLocal={!localPlayerRef.current?.isWalking} drifting={localPlayerRef.current?.drifting && !localPlayerRef.current?.isWalking} />
@@ -364,13 +511,21 @@ const GameScene = ({
         <CharacterModel color={players[myId || '']?.color || 'red'} />
         <pointLight position={[0, 2, 0]} intensity={5} distance={15} color="white" />
       </group>
+
+      {/* Compass */}
+      {showCompass && <CompassArrow localPlayerRef={localPlayerRef} />}
       
       {/* Remote Players */}
       {Object.values(players).map(p => {
         if (p.id === myId) return null;
+        const carX = p.isWalking ? p.carX : p.x;
+        const carY = p.isWalking ? p.carY : p.y;
+        const carH = getTerrainHeight(carX, carY);
+        const charH = getTerrainHeight(p.x, p.y);
+        
         return (
           <React.Fragment key={p.id}>
-            <group position={[p.isWalking ? p.carX : p.x, 0, p.isWalking ? p.carY : p.y]} rotation={[0, -(p.isWalking ? p.carAngle : p.angle) + Math.PI/2, 0]}>
+            <group position={[carX, carH, carY]} rotation={[0, -(p.isWalking ? p.carAngle : p.angle) + Math.PI/2, 0]}>
               <CarModel color={p.color} drifting={p.drifting && !p.isWalking} />
               {!p.isWalking && (
                 <Text position={[0, 3, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle">
@@ -379,7 +534,7 @@ const GameScene = ({
               )}
             </group>
             {p.isWalking && (
-              <group position={[p.x, 0, p.y]} rotation={[0, -p.angle + Math.PI/2, 0]}>
+              <group position={[p.x, charH, p.y]} rotation={[0, -p.angle + Math.PI/2, 0]}>
                 <CharacterModel color={p.color} />
                 <Text position={[0, 4, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle">
                   {p.name}
@@ -393,12 +548,33 @@ const GameScene = ({
   );
 };
 
-export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record<string, Player> }) {
-  // Sanitize initial players to handle Infinity/null issue
+export default function GameCanvas({ 
+  initialPlayers, 
+  onExitGame,
+  settings
+}: { 
+  initialPlayers?: Record<string, Player>, 
+  onExitGame: () => void,
+  settings: { volume: number, showCompass: boolean, showLog: boolean }
+}) {
+  // Sound Effects
+  const { play: playEngine, stop: stopEngine, setVolume: setEngineVolume } = useSound('/sounds/engine_loop.mp3', { loop: true, volume: 0.3 * (settings.volume / 100) });
+  const { play: playDrift, stop: stopDrift, setVolume: setDriftVolume } = useSound('/sounds/drift.mp3', { volume: 0.7 * (settings.volume / 100) });
+  const { play: playNitro, setVolume: setNitroVolume } = useSound('/sounds/nitro.mp3', { volume: 0.8 * (settings.volume / 100) });
+  const { play: playCollision, setVolume: setCollisionVolume } = useSound('/sounds/collision.mp3', { volume: 0.9 * (settings.volume / 100) });
+
+  useEffect(() => {
+    setEngineVolume(0.3 * (settings.volume / 100));
+    setDriftVolume(0.7 * (settings.volume / 100));
+    setNitroVolume(0.8 * (settings.volume / 100));
+    setCollisionVolume(0.9 * (settings.volume / 100));
+  }, [settings.volume, setEngineVolume, setDriftVolume, setNitroVolume, setCollisionVolume]);
+
+  // Sanitize initial players
   const sanitizedInitial = useMemo(() => {
       if (!initialPlayers) return {};
       return Object.entries(initialPlayers).reduce((acc, [id, p]) => {
-        acc[id] = { ...p, bestLapTime: p.bestLapTime || Infinity };
+        acc[id] = { ...p, score: p.score || 0 };
         return acc;
       }, {} as Record<string, Player>);
   }, [initialPlayers]);
@@ -410,7 +586,23 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
   const [currentLapStart, setCurrentLapStart] = useState<number>(Date.now());
   const [nitro, setNitro] = useState(100);
   const [wrongWay, setWrongWay] = useState(false);
+  const [showDebugger, setShowDebugger] = useState(false);
+  const [showPhone, setShowPhone] = useState(false);
   const timerRef = useRef<HTMLDivElement>(null);
+  const fpsRef = useRef<number>(0);
+  const lastFrameTimeRef = useRef<number>(performance.now());
+  const frameCountRef = useRef<number>(0);
+  
+  const [eventLog, setEventLog] = useState<{id: number, message: string, color: string, time: number}[]>([]);
+  const eventIdCounter = useRef(0);
+
+  const addLog = useCallback((message: string, color: string = 'white') => {
+    const id = eventIdCounter.current++;
+    setEventLog(prev => [...prev, { id, message, color, time: Date.now() }]);
+    setTimeout(() => {
+      setEventLog(prev => prev.filter(log => log.id !== id));
+    }, 4000);
+  }, []);
   
   // HUD Helper
   const formatTime = (ms: number) => {
@@ -440,8 +632,11 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
     carAngle: number;
     toggleCooldown: number;
     shake: number;
+    score: number;
+    hasGoods: boolean;
+    targetZoneIndex: number;
   }>({
-    x: 650,
+    x: 660,
     y: 750,
     angle: Math.PI,
     speed: 0,
@@ -451,12 +646,15 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
     drifting: false,
     wrongWayTimer: null,
     lapCount: 0,
-    isWalking: false,
+    isWalking: true,
     carX: 650,
     carY: 750,
     carAngle: Math.PI,
     toggleCooldown: 0,
     shake: 0,
+    score: 0,
+    hasGoods: false,
+    targetZoneIndex: 0,
   });
 
   // Initialize local player position from props if available
@@ -466,12 +664,13 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           localPlayer.current.x = p.x;
           localPlayer.current.y = p.y;
           localPlayer.current.angle = p.angle;
-          localPlayer.current.isWalking = p.isWalking || false;
+          localPlayer.current.isWalking = p.isWalking ?? true;
           localPlayer.current.carX = p.carX ?? p.x;
           localPlayer.current.carY = p.carY ?? p.y;
           localPlayer.current.carAngle = p.carAngle ?? p.angle;
-          // Don't reset laps here as game might be in progress? 
-          // Actually for new game start, laps are 0.
+          localPlayer.current.score = p.score ?? 0;
+          localPlayer.current.hasGoods = p.hasGoods ?? false;
+          localPlayer.current.targetZoneIndex = p.targetZoneIndex ?? 0;
       }
   }, [myId]); // Run once when ID is confirmed
 
@@ -490,7 +689,8 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
     
     socket.on('playerJoinedRoom', (player: unknown) => {
       const p = player as Player;
-      setPlayers((prev) => ({ ...prev, [p.id]: { ...p, bestLapTime: p.bestLapTime || Infinity } }));
+      setPlayers((prev) => ({ ...prev, [p.id]: { ...p, score: p.score || 0 } }));
+      addLog(`${p.name} joined the race`, 'text-blue-400');
     });
 
     socket.on('playerMoved', (player: unknown) => {
@@ -498,33 +698,38 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       setPlayers((prev) => {
         // Don't update local player from server to avoid jitter
         if (p.id === socket.id) return prev;
-        return { ...prev, [p.id]: { ...p, bestLapTime: p.bestLapTime || Infinity } };
+        return { ...prev, [p.id]: { ...p, score: p.score || 0 } };
       });
     });
     
-    socket.on('lapUpdate', (data: {id: string, laps: number, bestLapTime: number}) => {
+    socket.on('deliveryUpdate', (data: {id: string, score: number, hasGoods: boolean, targetZoneIndex: number}) => {
         setPlayers(prev => {
             if (!prev[data.id]) return prev;
             
-            // If server sends null/0 (from Infinity), treat as Infinity
-            const serverBest = data.bestLapTime || Infinity;
-            
-            // If this is local player, only update if server time is BETTER or EQUAL to local time
+            // If this is local player, only update if server score is BETTER or EQUAL to local score
             // This prevents overwriting optimistic update with stale server data
             if (data.id === socket.id) {
-                 const currentBest = prev[data.id].bestLapTime || Infinity;
-                 if (serverBest > currentBest && currentBest !== Infinity) {
-                     // Server sent worse time than we have locally? Ignore it.
+                 const currentScore = prev[data.id].score || 0;
+                 if (data.score < currentScore) {
+                     // Server sent worse score than we have locally? Ignore it.
                      return prev;
                  }
+            } else {
+                // Log remote player delivery
+                if (data.score > (prev[data.id].score || 0)) {
+                    addLog(`${prev[data.id].name} made a delivery!`, 'text-green-400');
+                } else if (data.hasGoods && !prev[data.id].hasGoods) {
+                    addLog(`${prev[data.id].name} picked up goods`, 'text-yellow-400');
+                }
             }
 
             return {
                 ...prev,
                 [data.id]: {
                     ...prev[data.id],
-                    laps: data.laps,
-                    bestLapTime: serverBest
+                    score: data.score,
+                    hasGoods: data.hasGoods,
+                    targetZoneIndex: data.targetZoneIndex
                 }
             };
         });
@@ -533,6 +738,9 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
     socket.on('playerDisconnected', (id: string) => {
       setPlayers((prev) => {
         const next = { ...prev };
+        if (next[id]) {
+            addLog(`${next[id].name} left the race`, 'text-slate-400');
+        }
         delete next[id];
         return next;
       });
@@ -543,7 +751,9 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       socket.off('playerJoinedRoom');
       socket.off('playerMoved');
       socket.off('playerDisconnected');
-      socket.off('lapUpdate');
+      socket.off('deliveryUpdate');
+      stopEngine();
+      stopDrift();
     };
   }, []);
 
@@ -551,6 +761,13 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       localPlayer.current.keys[e.code] = true;
+      if (e.code === 'Backquote') {
+        setShowDebugger(prev => !prev);
+      }
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        setShowPhone(prev => !prev);
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       localPlayer.current.keys[e.code] = false;
@@ -568,8 +785,18 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
   // Physics Loop (runs independently of 3D render loop)
   useEffect(() => {
     let animationFrameId: number;
+    let enginePlaying = false;
+    let driftPlaying = false;
 
     const updatePhysics = () => {
+      const now = performance.now();
+      frameCountRef.current++;
+      if (now - lastFrameTimeRef.current >= 1000) {
+        fpsRef.current = frameCountRef.current;
+        frameCountRef.current = 0;
+        lastFrameTimeRef.current = now;
+      }
+
       const p = localPlayer.current;
       const oldX = p.x;
       const oldY = p.y;
@@ -628,7 +855,18 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           p.nitro = Math.min(100, p.nitro + 0.2); // recharge nitro while walking
           setNitro(p.nitro);
           p.drifting = false;
+          if (enginePlaying) {
+              stopEngine();
+              enginePlaying = false;
+          }
       } else {
+          // Engine Sound
+          if (!enginePlaying) {
+              playEngine();
+              enginePlaying = true;
+          }
+          setEngineVolume(Math.min(1, 0.3 + Math.abs(p.speed) / MAX_SPEED * 0.7));
+
           // Acceleration
           if (p.keys['ArrowUp'] || p.keys['KeyW']) {
             p.speed += ACCELERATION;
@@ -642,6 +880,7 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           if ((p.keys['ShiftLeft'] || p.keys['ShiftRight']) && p.nitro > 0) {
               p.speed += NITRO_ACCEL;
               p.nitro = Math.max(0, p.nitro - 1);
+              playNitro();
           } else {
               p.nitro = Math.min(100, p.nitro + 0.2);
           }
@@ -653,8 +892,16 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           
           if (wantsDrift && isTurning && Math.abs(p.speed) > 1.5) {
               p.drifting = true;
+              if (!driftPlaying) {
+                  playDrift();
+                  driftPlaying = true;
+              }
           } else {
               p.drifting = false;
+              if (driftPlaying) {
+                  stopDrift();
+                  driftPlaying = false;
+              }
           }
 
           // Max Speed Cap
@@ -739,100 +986,59 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
         
         if (Math.abs(p.speed) > 0.5) {
             p.shake = Math.min(p.shake + 0.5, 2.5); // Add shake when off-track
+            playCollision();
         }
       }
 
-      // Sector/Lap Logic
-      // Check distance to specific segments to act as checkpoints
-      let currentSector = -1;
-      const d0 = distToSegment({x: p.x, y: p.y}, TRACK_SEGMENTS[0].start, TRACK_SEGMENTS[0].end);
-      const d1 = distToSegment({x: p.x, y: p.y}, TRACK_SEGMENTS[4].start, TRACK_SEGMENTS[4].end);
-      const d2 = distToSegment({x: p.x, y: p.y}, TRACK_SEGMENTS[8].start, TRACK_SEGMENTS[8].end);
-      const d3 = distToSegment({x: p.x, y: p.y}, TRACK_SEGMENTS[11].start, TRACK_SEGMENTS[11].end);
-
-      if (d0 < TRACK_RADIUS * 1.5) currentSector = 0;
-      else if (d1 < TRACK_RADIUS * 1.5) currentSector = 1;
-      else if (d2 < TRACK_RADIUS * 1.5) currentSector = 2;
-      else if (d3 < TRACK_RADIUS * 1.5) currentSector = 3;
-      
-      // Checkpoint progression
-      if (!p.isWalking && currentSector !== -1) {
-          const nextCheckpoint = (p.checkpoint + 1) % 4;
-          if (currentSector === nextCheckpoint) {
-              p.checkpoint = currentSector;
-          }
-      }
-
-      // Lap Finish Check (Crossing x=625 on segment 12)
-      const onFinishStraight = p.y > 700 && p.y < 800;
-      if (!p.isWalking && p.checkpoint === 3 && onFinishStraight && oldX >= 625 && p.x < 625) {
-          const now = Date.now();
-          const lapTime = now - currentLapStart;
-          
-          // Always reset timer for the next lap
-          setCurrentLapStart(now);
-          
-          // Increment internal lap count
-          p.lapCount = (p.lapCount || 0) + 1;
-          setLaps(p.lapCount);
-          
-          // Only record best time if this wasn't the start-line crossing (Lap 1 start)
-          if (p.lapCount > 1) {
-              setLastLapTime(lapTime);
+      // Delivery Logic
+      const targetZone = DELIVERY_ZONES[p.targetZoneIndex];
+      if (targetZone) {
+          const distToZone = Math.hypot(p.x - targetZone.x, p.y - targetZone.y);
+          if (distToZone < 40) { // Zone radius
+              // Reached target!
+              if (p.hasGoods) {
+                  p.score += 1;
+                  p.hasGoods = false;
+                  addLog('Delivery successful! +1 Point', 'text-green-400');
+              } else {
+                  p.hasGoods = true;
+                  addLog('Goods picked up! Deliver them to the next zone.', 'text-yellow-400');
+              }
               
-              // Optimistically update local player's best lap time
+              // Pick a new random zone that isn't the current one
+              let newZoneIndex = p.targetZoneIndex;
+              while (newZoneIndex === p.targetZoneIndex) {
+                  newZoneIndex = Math.floor(Math.random() * DELIVERY_ZONES.length);
+              }
+              p.targetZoneIndex = newZoneIndex;
+
+              // Emit update to server
+              socket.emit('deliveryUpdate', {
+                  score: p.score,
+                  hasGoods: p.hasGoods,
+                  targetZoneIndex: p.targetZoneIndex
+              });
+              
+              // Optimistically update local player
               setPlayers(prev => {
                   if (!myId || !prev[myId]) return prev;
-                  const currentBest = prev[myId].bestLapTime;
-                  if (!currentBest || lapTime < currentBest) {
-                      return {
-                          ...prev,
-                          [myId]: {
-                              ...prev[myId],
-                              bestLapTime: lapTime
-                          }
-                      };
-                  }
-                  return prev;
+                  return {
+                      ...prev,
+                      [myId]: {
+                          ...prev[myId],
+                          score: p.score,
+                          hasGoods: p.hasGoods,
+                          targetZoneIndex: p.targetZoneIndex
+                      }
+                  };
               });
-
-              // Send to server
-              socket.emit('lapFinished', lapTime);
           }
-          
-          // Reset checkpoint for next lap
-          p.checkpoint = -1; // Wait for sector 0
       }
 
-      // Wrong Way Detection (Angle based)
-      // Use targetAngle from the closest segment (calculated above in collision logic)
-      
-      // Normalize player angle to -PI to PI
-      let pAngle = p.angle % (Math.PI * 2);
-      if (pAngle > Math.PI) pAngle -= Math.PI * 2;
-      if (pAngle < -Math.PI) pAngle += Math.PI * 2;
-      
-      // Calculate difference
-      let diff = Math.abs(pAngle - targetAngle);
-      if (diff > Math.PI) diff = Math.PI * 2 - diff;
-      
-      // If angle difference is > 115 degrees (approx 2.0 rad), show warning
-      // Only if moving forward (speed > 0.5) and not walking
-      // Removed isOnTrack check to ensure it triggers even if slightly off-line
-      const isWrongWayConditionMet = !p.isWalking && diff > 2.0 && p.speed > 0.5;
-      
-      if (isWrongWayConditionMet) {
-          if (p.wrongWayTimer === null) {
-              p.wrongWayTimer = Date.now();
-          } else if (Date.now() - p.wrongWayTimer > 100) {
-              setWrongWay(true);
-          }
-      } else {
-          // Reset timer if we are facing correct way OR moving slow
-          p.wrongWayTimer = null;
-          setWrongWay(false);
-      }
-
+      // Wrong Way Detection (simplified or removed for delivery mode)
+      // For delivery, wrong way doesn't make as much sense since you can go anywhere.
+      // We'll just disable it.
+      if (wrongWay) setWrongWay(false);
 
       // Send update
       if (socket.connected) {
@@ -848,11 +1054,6 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           carY: p.carY,
           carAngle: p.carAngle
         });
-      }
-
-      // Update Timer DOM
-      if (timerRef.current) {
-          timerRef.current.innerText = formatTime(Date.now() - currentLapStart);
       }
 
       animationFrameId = requestAnimationFrame(updatePhysics);
@@ -871,11 +1072,11 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
         <color attach="background" args={['#0f172a']} />
         <PerspectiveCamera makeDefault position={[0, 50, 50]} fov={60} far={1000} />
         <fog attach="fog" args={['#0f172a', 100, 900]} />
-        <GameScene localPlayerRef={localPlayer} players={players} myId={myId} />
+        <GameScene localPlayerRef={localPlayer} players={players} myId={myId} showCompass={settings.showCompass} />
         
         {/* Particles */}
         {particles.map(pt => (
-            <mesh key={pt.id} position={[pt.x, 2, pt.y]} rotation={[-Math.PI/2, 0, 0]}>
+            <mesh key={pt.id} position={[pt.x, getTerrainHeight(pt.x, pt.y) + 2, pt.y]} rotation={[-Math.PI/2, 0, 0]}>
                 <planeGeometry args={[1.5 * pt.life, 1.5 * pt.life]} />
                 <meshBasicMaterial color="#888" transparent opacity={0.4 * pt.life} />
             </mesh>
@@ -885,51 +1086,34 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       </Canvas>
       
       {/* HUD Overlay */}
-      {/* Top Left: Leaderboard */}
-      <div className="absolute top-6 left-6 flex flex-col gap-3 pointer-events-none">
-          <div className="bg-black/50 text-white p-5 rounded-xl border border-white/10 backdrop-blur-md w-56">
-              <div className="text-xs text-slate-400 uppercase tracking-wider mb-2 font-bold">Leaderboard</div>
-              <div className="space-y-2">
-                  {Object.values(players)
-                    .map(p => p as Player)
-                    .sort((a, b) => (a.bestLapTime || Infinity) - (b.bestLapTime || Infinity))
-                    .slice(0, 5)
-                    .map((p, i) => (
-                      <div key={p.id} className="flex justify-between text-sm">
-                          <span className={`${p.id === socket.id ? 'text-yellow-400 font-bold' : 'text-slate-300'} truncate max-w-[120px]`}>
-                              {i+1}. {p.name}
-                          </span>
-                          <span className="font-mono text-slate-400">
-                              {p.bestLapTime !== Infinity ? formatTime(p.bestLapTime) : '-'}
-                          </span>
-                      </div>
-                  ))}
-              </div>
-          </div>
+      
+      {/* Top Left: Exit Game Button */}
+      <div className="absolute top-6 left-6 pointer-events-auto">
+        <button
+          onClick={onExitGame}
+          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-white font-bold transition-colors shadow-lg border border-white/10"
+        >
+          Back to Menu
+        </button>
       </div>
 
-      {/* Top Center: Lap Timer */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 pointer-events-none">
-          <div className="bg-black/50 text-white px-8 py-4 rounded-full border border-white/10 backdrop-blur-md flex items-center gap-8">
-              <div className="text-center">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider font-bold">Current</div>
-                  <div ref={timerRef} className="text-3xl font-mono font-bold text-yellow-400 leading-none">
-                      {formatTime(Date.now() - currentLapStart)}
+      {/* Top Right: Cash & Phone Prompt */}
+      <div className="absolute top-6 right-6 flex flex-col items-end gap-4 pointer-events-none">
+          <div className="bg-black/50 text-white px-6 py-3 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-4 shadow-lg">
+              <div className="text-right">
+                  <div className="text-xs text-slate-400 uppercase tracking-wider font-bold">Cash</div>
+                  <div className="text-2xl font-mono font-bold text-green-400 leading-none">
+                      ${(players[socket.id || '']?.score || 0) * 100}
                   </div>
               </div>
-              <div className="w-px h-12 bg-white/20"></div>
-              <div className="text-center">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider font-bold">Best</div>
-                  <div className="text-2xl font-mono text-slate-300 leading-none">
-                      {players[socket.id || '']?.bestLapTime !== Infinity ? formatTime(players[socket.id || '']?.bestLapTime || 0) : '--:--'}
-                  </div>
+          </div>
+          
+          <div className="bg-black/50 text-white px-4 py-2 rounded-xl border border-white/10 backdrop-blur-md flex items-center gap-3 shadow-lg">
+              <div className="w-6 h-10 bg-slate-800 rounded-md border-2 border-slate-600 flex items-center justify-center">
+                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
               </div>
-              <div className="w-px h-12 bg-white/20"></div>
-               <div className="text-center">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider font-bold">Lap</div>
-                  <div className="text-2xl font-mono text-slate-300 leading-none">
-                      {laps}
-                  </div>
+              <div className="text-sm font-bold text-slate-300">
+                  Press <span className="text-yellow-400 font-mono bg-black/50 px-2 py-1 rounded">TAB</span> for Phone
               </div>
           </div>
       </div>
@@ -948,16 +1132,139 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
           </div>
       </div>
 
-      {/* Wrong Way Warning */}
-      {wrongWay && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-            <div className="bg-red-600/90 text-white px-12 py-8 rounded-2xl border-8 border-white shadow-2xl animate-pulse">
-                <div className="text-6xl font-black italic uppercase tracking-widest">WRONG WAY</div>
+      {/* Wrong Way Warning (Disabled for delivery) */}
+
+      {/* Bottom Left: Controls (Faded) */}
+
+      {/* Debugger Window */}
+      {showDebugger && (
+        <div className="absolute bottom-6 right-6 pointer-events-none z-50">
+          <div className="bg-black/80 text-green-400 p-4 rounded-lg border border-green-500/30 font-mono text-xs w-64 shadow-2xl backdrop-blur-sm">
+            <div className="flex justify-between border-b border-green-500/30 pb-2 mb-2">
+              <span className="font-bold">DEBUGGER</span>
+              <span className="text-green-600">~ to toggle</span>
             </div>
+            <div className="space-y-1">
+              <div className="flex justify-between">
+                <span>FPS:</span>
+                <span>{fpsRef.current}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>X:</span>
+                <span>{localPlayer.current.x.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Y:</span>
+                <span>{localPlayer.current.y.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Angle:</span>
+                <span>{localPlayer.current.angle.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Speed:</span>
+                <span>{localPlayer.current.speed.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>State:</span>
+                <span>{localPlayer.current.isWalking ? 'Walking' : 'Driving'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Goods:</span>
+                <span>{localPlayer.current.hasGoods ? 'Yes' : 'No'}</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Bottom Left: Controls (Faded) */}
+      {/* Event Log */}
+      {settings.showLog && (
+        <div className="absolute top-32 right-6 flex flex-col items-end gap-2 pointer-events-none z-40">
+          {eventLog.map(log => (
+            <div 
+              key={log.id} 
+              className={`bg-black/60 px-4 py-2 rounded-lg border border-white/10 backdrop-blur-sm text-sm font-bold shadow-lg transition-all duration-500 animate-in slide-in-from-right-8 fade-in ${log.color}`}
+            >
+              {log.message}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Virtual Phone */}
+      {showPhone && (
+        <div className="absolute right-10 bottom-10 w-80 h-[600px] bg-slate-900 rounded-[3rem] border-[8px] border-slate-800 shadow-2xl overflow-hidden flex flex-col pointer-events-auto z-50 transform transition-transform duration-300">
+          {/* Phone Header */}
+          <div className="bg-slate-800 px-6 py-2 flex justify-between items-center text-xs text-slate-400 font-bold">
+            <span>{new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+            <div className="flex gap-2">
+              <span>5G</span>
+              <span>100%</span>
+            </div>
+          </div>
+          
+          {/* Phone Content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900 text-slate-200">
+            {/* Banking App */}
+            <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+              <h3 className="text-sm text-slate-400 uppercase font-bold mb-1">Maze Bank</h3>
+              <div className="text-3xl font-mono font-bold text-green-400">
+                ${(players[socket.id || '']?.score || 0) * 100}
+              </div>
+            </div>
+
+            {/* Jobs App */}
+            <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+              <h3 className="text-sm text-slate-400 uppercase font-bold mb-3">Current Job</h3>
+              <div className="bg-slate-900 p-3 rounded-xl">
+                <div className={`text-sm font-bold mb-1 ${players[socket.id || '']?.hasGoods ? 'text-green-400' : 'text-blue-400'}`}>
+                    {players[socket.id || '']?.hasGoods ? 'DELIVER TO:' : 'PICKUP AT:'}
+                </div>
+                <div className="text-xl font-bold text-white">
+                    {DELIVERY_ZONES[players[socket.id || '']?.targetZoneIndex || 0]?.name || '...'}
+                </div>
+              </div>
+            </div>
+
+            {/* Leaderboard App */}
+            <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+              <h3 className="text-sm text-slate-400 uppercase font-bold mb-3">Top Earners</h3>
+              <div className="space-y-2">
+                  {Object.values(players)
+                    .map(p => p as Player)
+                    .sort((a, b) => (b.score || 0) - (a.score || 0))
+                    .slice(0, 5)
+                    .map((p, i) => (
+                      <div key={p.id} className="flex justify-between text-sm bg-slate-900 p-2 rounded-lg">
+                          <span className={`${p.id === socket.id ? 'text-yellow-400 font-bold' : 'text-slate-300'} truncate max-w-[120px]`}>
+                              {i+1}. {p.name}
+                          </span>
+                          <span className="font-mono text-green-400">
+                              ${(p.score || 0) * 100}
+                          </span>
+                      </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Phone Home Button */}
+          <div className="bg-slate-800 h-12 flex items-center justify-center cursor-pointer hover:bg-slate-700 transition-colors" onClick={() => setShowPhone(false)}>
+            <div className="w-1/3 h-1.5 bg-slate-600 rounded-full"></div>
+          </div>
+        </div>
+      )}
+
+      {/* Exit Game Button (Top Right) */}
+      <div className="absolute top-6 right-6 pointer-events-auto hidden">
+        <button
+          onClick={onExitGame}
+          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-white font-bold transition-colors"
+        >
+          Back to Menu
+        </button>
+      </div>
       <div className="absolute bottom-6 left-6 text-white pointer-events-none opacity-50 hover:opacity-100 transition-opacity duration-300">
         <div className="bg-black/40 p-5 rounded-xl backdrop-blur-md border border-white/10">
             <h3 className="font-bold text-sm mb-2 text-yellow-400/80">Controls</h3>
@@ -967,6 +1274,8 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
             <li>A / D  : Turn</li>
             <li>SPACE  : Drift</li>
             <li>SHIFT  : Nitro</li>
+            <li>TAB    : Phone</li>
+            <li>~      : Toggle Debugger</li>
             </ul>
         </div>
       </div>

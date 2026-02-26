@@ -11,8 +11,9 @@ export type Player = {
   color: string;
   name: string;
   speed: number;
-  laps: number;
-  bestLapTime: number;
+  score: number;
+  hasGoods: boolean;
+  targetZoneIndex: number;
   nitro: number;
   drifting: boolean;
   isWalking: boolean;
