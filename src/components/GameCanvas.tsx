@@ -593,6 +593,8 @@ export default function GameCanvas({
   const { play: playCollision, setVolume: setCollisionVolume } = useSound('/sounds/collision.mp3', { volume: 0.9 * (settings.volume / 100) });
   const { play: playPickup } = useSound('/sounds/pickup.mp3', { volume: 0.8 * (settings.volume / 100) });
   const { play: playDelivery } = useSound('/sounds/delivery.mp3', { volume: 0.9 * (settings.volume / 100) });
+  const { play: playCheckpoint } = useSound('/sounds/checkpoint.mp3', { volume: 0.7 * (settings.volume / 100) });
+  const { play: playLapComplete } = useSound('/sounds/lap_complete.mp3', { volume: 1.0 * (settings.volume / 100) });
   const { play: playFootsteps, stop: stopFootsteps } = useSound('/sounds/footsteps.mp3', { loop: true, volume: 0.5 * (settings.volume / 100) });
   const { play: playWind, stop: stopWind, setVolume: setWindVolume } = useSound('/sounds/ambient_wind.mp3', { loop: true, volume: 0 });
   const { play: playNature, stop: stopNature, setVolume: setNatureVolume } = useSound('/sounds/ambient_nature.mp3', { loop: true, volume: 0.2 * (settings.volume / 100) });
@@ -679,7 +681,7 @@ export default function GameCanvas({
     angle: Math.PI,
     speed: 0,
     keys: {},
-    checkpoint: 3, // Start in sector 3 (before finish line)
+    checkpoint: 2, // Start before finish line (checkpoint 0)
     nitro: 100,
     drifting: false,
     wrongWayTimer: null,
@@ -1126,9 +1128,64 @@ export default function GameCanvas({
         
         if (Math.abs(p.speed) > 0.5) {
             p.shake = Math.min(p.shake + 0.5, 2.5); // Add shake when off-track
-            playCollision();
+            // Play collision sound with rate limiting
+            if (Math.random() > 0.9) playCollision();
         }
       }
+
+      // Car-to-Car Collision
+      Object.values(players).forEach(other => {
+          if (other.id === myId) return;
+          const dx = p.x - other.x;
+          const dy = p.y - other.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist < 3.0) { // Collision radius
+              // Simple elastic collision response
+              const angle = Math.atan2(dy, dx);
+              const force = 0.5;
+              p.x += Math.cos(angle) * force;
+              p.y += Math.sin(angle) * force;
+              p.speed *= -0.5; // Bounce back
+              playCollision();
+              p.shake = 2.0;
+          }
+      });
+
+      // Checkpoint Logic
+      // Define checkpoints as segments or zones
+      // 0: Start/Finish (625, 750)
+      // 1: Top Right (1100, 150)
+      // 2: Bottom Left (150, 750)
+      
+      const checkpoints = [
+          { x: 625, y: 750, r: 40 }, // Start/Finish
+          { x: 1100, y: 150, r: 40 }, // Checkpoint 1
+          { x: 150, y: 750, r: 40 }   // Checkpoint 2
+      ];
+      
+      checkpoints.forEach((cp, i) => {
+          const dx = p.x - cp.x;
+          const dy = p.y - cp.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          
+          if (dist < cp.r) {
+              if (p.checkpoint !== i) {
+                  // Only trigger if moving forward through checkpoints
+                  const nextCp = (p.checkpoint + 1) % checkpoints.length;
+                  if (i === nextCp) {
+                      p.checkpoint = i;
+                      if (i === 0) {
+                          // Lap Complete
+                          p.lapCount++;
+                          playLapComplete();
+                          addLog(`Lap ${p.lapCount} Complete!`, 'text-purple-400');
+                      } else {
+                          playCheckpoint();
+                      }
+                  }
+              }
+          }
+      });
 
       // Delivery Logic (Multiplayer Only - Single Player Handled Above)
       if (!isSinglePlayer) {
