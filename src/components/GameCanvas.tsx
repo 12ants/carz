@@ -7,7 +7,7 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { socket } from '../services/socket';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerspectiveCamera, Environment, Text, OrbitControls } from '@react-three/drei';
-import { EffectComposer, Bloom, SSAO } from '@react-three/postprocessing';
+import { EffectComposer, Bloom, N8AO } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { createNoise2D } from 'simplex-noise';
 import { Player } from '../types';
@@ -574,6 +574,67 @@ const GameScene = ({
   );
 };
 
+const Joystick = ({ onMove }: { onMove: (x: number, y: number) => void }) => {
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const joystickRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+
+  const handleStart = (e: React.TouchEvent | React.MouseEvent) => {
+    isDragging.current = true;
+    handleMove(e);
+  };
+
+  const handleMove = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!isDragging.current || !joystickRef.current) return;
+    
+    const rect = joystickRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    let dx = clientX - centerX;
+    let dy = clientY - centerY;
+    
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const maxRadius = rect.width / 2;
+    
+    if (distance > maxRadius) {
+      dx *= maxRadius / distance;
+      dy *= maxRadius / distance;
+    }
+    
+    setPosition({ x: dx, y: dy });
+    onMove(dx / maxRadius, dy / maxRadius);
+  };
+
+  const handleEnd = () => {
+    isDragging.current = false;
+    setPosition({ x: 0, y: 0 });
+    onMove(0, 0);
+  };
+
+  return (
+    <div 
+      ref={joystickRef}
+      className="w-32 h-32 bg-white/10 backdrop-blur-md rounded-full border border-white/20 relative touch-none select-none"
+      onTouchStart={handleStart}
+      onTouchMove={handleMove}
+      onTouchEnd={handleEnd}
+      onMouseDown={handleStart}
+      onMouseMove={handleMove}
+      onMouseUp={handleEnd}
+      onMouseLeave={handleEnd}
+    >
+      <div 
+        className="w-12 h-12 bg-white/30 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none transition-transform duration-75"
+        style={{ transform: `translate(${position.x - 24}px, ${position.y - 24}px)` }}
+      />
+    </div>
+  );
+};
+
 export default function GameCanvas({ 
   initialPlayers, 
   onExitGame,
@@ -599,6 +660,7 @@ export default function GameCanvas({
   const { play: playFootsteps, stop: stopFootsteps } = useSound('/sounds/footsteps.mp3', { loop: true, volume: 0.5 * (settings.volume / 100) });
   const { play: playWind, stop: stopWind, setVolume: setWindVolume } = useSound('/sounds/ambient_wind.mp3', { loop: true, volume: 0 });
   const { play: playNature, stop: stopNature, setVolume: setNatureVolume } = useSound('/sounds/ambient_nature.mp3', { loop: true, volume: 0.2 * (settings.volume / 100) });
+  const { play: playCity, stop: stopCity, setVolume: setCityVolume } = useSound('/sounds/ambient_city.mp3', { loop: true, volume: 0.1 * (settings.volume / 100) });
 
   // Sensor Steering Logic
   useEffect(() => {
@@ -816,6 +878,7 @@ export default function GameCanvas({
     // Start ambient sounds
     playWind();
     playNature();
+    playCity();
 
     return () => {
       if (!isSinglePlayer) {
@@ -830,6 +893,7 @@ export default function GameCanvas({
       stopFootsteps();
       stopWind();
       stopNature();
+      stopCity();
     };
   }, [isSinglePlayer]);
 
@@ -1314,6 +1378,10 @@ export default function GameCanvas({
       const natureVol = Math.max(0.05, 0.2 - Math.max(0, (h - 40) / 100)) * masterVol;
       setNatureVolume(natureVol);
 
+      // City ambience is louder at low altitudes
+      const cityVol = Math.max(0, 0.15 - (h / 100)) * masterVol;
+      setCityVolume(cityVol);
+
       animationFrameId = requestAnimationFrame(updatePhysics);
     };
 
@@ -1334,7 +1402,7 @@ export default function GameCanvas({
         
         <EffectComposer>
             <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.9} height={300} intensity={0.5} />
-            <SSAO />
+            <N8AO aoRadius={50} distanceFalloff={0.2} intensity={1} />
         </EffectComposer>
         
         {/* Particles */}
@@ -1351,62 +1419,91 @@ export default function GameCanvas({
       {/* Mobile Controls */}
       {settings.mobileControls && (
         <>
-            {/* Steering (Left Side) - Only if sensor steering is OFF */}
-            {!settings.sensorSteering && (
-                <div className="absolute bottom-8 left-8 flex gap-4 pointer-events-auto z-50">
-                    <button 
-                        className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full border border-white/20 active:bg-white/30 flex items-center justify-center select-none touch-none"
-                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowLeft'] = true; }}
-                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowLeft'] = false; }}
-                    >
-                        <span className="text-3xl text-white">←</span>
-                    </button>
-                    <button 
-                        className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full border border-white/20 active:bg-white/30 flex items-center justify-center select-none touch-none"
-                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowRight'] = true; }}
-                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowRight'] = false; }}
-                    >
-                        <span className="text-3xl text-white">→</span>
-                    </button>
-                </div>
-            )}
+            {/* Joystick (Left Side) */}
+            <div className="absolute bottom-12 left-12 pointer-events-auto z-50">
+                <Joystick onMove={(x, y) => {
+                    // Steering
+                    if (x < -0.3) {
+                        localPlayer.current.keys['ArrowLeft'] = true;
+                        localPlayer.current.keys['ArrowRight'] = false;
+                    } else if (x > 0.3) {
+                        localPlayer.current.keys['ArrowRight'] = true;
+                        localPlayer.current.keys['ArrowLeft'] = false;
+                    } else {
+                        localPlayer.current.keys['ArrowLeft'] = false;
+                        localPlayer.current.keys['ArrowRight'] = false;
+                    }
+
+                    // Acceleration / Braking
+                    if (y < -0.3) {
+                        localPlayer.current.keys['ArrowUp'] = true;
+                        localPlayer.current.keys['ArrowDown'] = false;
+                    } else if (y > 0.3) {
+                        localPlayer.current.keys['ArrowDown'] = true;
+                        localPlayer.current.keys['ArrowUp'] = false;
+                    } else {
+                        localPlayer.current.keys['ArrowUp'] = false;
+                        localPlayer.current.keys['ArrowDown'] = false;
+                    }
+                }} />
+            </div>
 
             {/* Actions (Right Side) */}
-            <div className="absolute bottom-8 right-8 grid grid-cols-2 gap-4 pointer-events-auto z-50">
-                {/* Brake / Reverse */}
+            <div className="absolute bottom-12 right-12 flex flex-col items-end gap-6 pointer-events-auto z-50">
+                {/* Enter/Exit Car Button */}
                 <button 
-                    className="w-16 h-16 bg-red-500/20 backdrop-blur-md rounded-full border border-red-500/40 active:bg-red-500/40 flex items-center justify-center select-none touch-none"
-                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowDown'] = true; }}
-                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowDown'] = false; }}
+                    className="w-16 h-16 bg-purple-500/20 backdrop-blur-md rounded-full border border-purple-500/40 active:bg-purple-500/40 flex items-center justify-center select-none touch-none"
+                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['KeyE'] = true; }}
+                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['KeyE'] = false; }}
                 >
-                    <span className="text-xl text-red-200 font-bold">S</span>
+                    <span className="text-xl text-purple-200 font-bold">E</span>
                 </button>
 
-                {/* Gas */}
+                <div className="grid grid-cols-2 gap-4">
+                    {/* Drift */}
+                    <button 
+                        className="w-16 h-16 bg-yellow-500/20 backdrop-blur-md rounded-full border border-yellow-500/40 active:bg-yellow-500/40 flex items-center justify-center select-none touch-none"
+                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = true; }}
+                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = false; }}
+                    >
+                        <span className="text-xl text-yellow-200 font-bold">D</span>
+                    </button>
+
+                    {/* Nitro */}
+                    <button 
+                        className="w-16 h-16 bg-blue-500/20 backdrop-blur-md rounded-full border border-blue-500/40 active:bg-blue-500/40 flex items-center justify-center select-none touch-none"
+                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = true; }}
+                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = false; }}
+                    >
+                        <span className="text-xl text-blue-200 font-bold">N</span>
+                    </button>
+                </div>
+            </div>
+
+            {/* Utility Buttons (Top Right, below HUD) */}
+            <div className="absolute top-24 right-4 flex flex-col gap-4 pointer-events-auto z-50">
+                {/* Phone */}
                 <button 
-                    className="w-20 h-20 bg-green-500/20 backdrop-blur-md rounded-full border border-green-500/40 active:bg-green-500/40 flex items-center justify-center -mt-8 select-none touch-none"
-                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowUp'] = true; }}
-                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowUp'] = false; }}
+                    className="w-12 h-12 bg-slate-800/50 backdrop-blur-md rounded-full border border-white/20 active:bg-slate-700/50 flex items-center justify-center select-none touch-none"
+                    onClick={() => setShowPhone(prev => !prev)}
                 >
-                    <span className="text-3xl text-green-200 font-bold">W</span>
+                    <span className="text-xl">📱</span>
                 </button>
                 
-                {/* Drift */}
+                {/* Camera */}
                 <button 
-                    className="w-16 h-16 bg-yellow-500/20 backdrop-blur-md rounded-full border border-yellow-500/40 active:bg-yellow-500/40 flex items-center justify-center select-none touch-none"
-                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = true; }}
-                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = false; }}
+                    className="w-12 h-12 bg-slate-800/50 backdrop-blur-md rounded-full border border-white/20 active:bg-slate-700/50 flex items-center justify-center select-none touch-none"
+                    onClick={() => setFreeCam(prev => !prev)}
                 >
-                    <span className="text-xl text-yellow-200 font-bold">D</span>
+                    <span className="text-xl">📷</span>
                 </button>
-
-                {/* Nitro */}
+                
+                {/* Debug */}
                 <button 
-                    className="w-16 h-16 bg-blue-500/20 backdrop-blur-md rounded-full border border-blue-500/40 active:bg-blue-500/40 flex items-center justify-center select-none touch-none"
-                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = true; }}
-                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = false; }}
+                    className="w-12 h-12 bg-slate-800/50 backdrop-blur-md rounded-full border border-white/20 active:bg-slate-700/50 flex items-center justify-center select-none touch-none"
+                    onClick={() => setShowDebugger(prev => !prev)}
                 >
-                    <span className="text-xl text-blue-200 font-bold">N</span>
+                    <span className="text-xl">🐛</span>
                 </button>
             </div>
         </>
