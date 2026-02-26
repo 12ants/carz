@@ -26,6 +26,8 @@ export default function App() {
     volume: 50,
     showCompass: true,
     showLog: true,
+    mobileControls: false,
+    sensorSteering: false,
   });
 
   useEffect(() => {
@@ -380,6 +382,28 @@ export default function App() {
                       <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.showLog ? 'translate-x-7' : 'translate-x-1'}`} />
                     </button>
                   </div>
+
+                  <div className="flex items-center justify-between">
+                    <label className="font-bold text-white">Mobile Controls</label>
+                    <button 
+                      onClick={() => setSettings(prev => ({...prev, mobileControls: !prev.mobileControls}))}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${settings.mobileControls ? 'bg-green-500' : 'bg-slate-600'}`}
+                    >
+                      <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.mobileControls ? 'translate-x-7' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  {settings.mobileControls && (
+                    <div className="flex items-center justify-between pl-4 border-l-2 border-slate-700">
+                      <label className="font-bold text-white text-sm">Sensor Steering</label>
+                      <button 
+                        onClick={() => setSettings(prev => ({...prev, sensorSteering: !prev.sensorSteering}))}
+                        className={`w-12 h-6 rounded-full transition-colors relative ${settings.sensorSteering ? 'bg-green-500' : 'bg-slate-600'}`}
+                      >
+                        <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.sensorSteering ? 'translate-x-7' : 'translate-x-1'}`} />
+                      </button>
+                    </div>
+                  )}
 
                   <button
                     onClick={handleGoToIntro}

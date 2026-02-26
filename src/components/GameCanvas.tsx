@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { socket } from '../services/socket';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerspectiveCamera, Environment, Text, OrbitControls } from '@react-three/drei';
+import { EffectComposer, Bloom, SSAO } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { createNoise2D } from 'simplex-noise';
 import { Player } from '../types';
@@ -582,7 +583,7 @@ export default function GameCanvas({
 }: { 
   initialPlayers?: Record<string, Player>, 
   onExitGame: () => void,
-  settings: { volume: number, showCompass: boolean, showLog: boolean },
+  settings: { volume: number, showCompass: boolean, showLog: boolean, mobileControls: boolean, sensorSteering: boolean },
   setSettings?: React.Dispatch<React.SetStateAction<any>>,
   isSinglePlayer?: boolean
 }) {
@@ -598,6 +599,31 @@ export default function GameCanvas({
   const { play: playFootsteps, stop: stopFootsteps } = useSound('/sounds/footsteps.mp3', { loop: true, volume: 0.5 * (settings.volume / 100) });
   const { play: playWind, stop: stopWind, setVolume: setWindVolume } = useSound('/sounds/ambient_wind.mp3', { loop: true, volume: 0 });
   const { play: playNature, stop: stopNature, setVolume: setNatureVolume } = useSound('/sounds/ambient_nature.mp3', { loop: true, volume: 0.2 * (settings.volume / 100) });
+
+  // Sensor Steering Logic
+  useEffect(() => {
+    if (settings.sensorSteering && settings.mobileControls) {
+      const handleOrientation = (event: DeviceOrientationEvent) => {
+        const gamma = event.gamma; // Left/Right tilt in degrees
+        if (gamma === null) return;
+        
+        // Deadzone of 5 degrees, max steering at 30 degrees
+        if (gamma < -5) {
+            localPlayer.current.keys['ArrowLeft'] = true;
+            localPlayer.current.keys['ArrowRight'] = false;
+        } else if (gamma > 5) {
+            localPlayer.current.keys['ArrowRight'] = true;
+            localPlayer.current.keys['ArrowLeft'] = false;
+        } else {
+            localPlayer.current.keys['ArrowLeft'] = false;
+            localPlayer.current.keys['ArrowRight'] = false;
+        }
+      };
+      
+      window.addEventListener('deviceorientation', handleOrientation);
+      return () => window.removeEventListener('deviceorientation', handleOrientation);
+    }
+  }, [settings.sensorSteering, settings.mobileControls]);
 
   useEffect(() => {
     setEngineVolume(0.3 * (settings.volume / 100));
@@ -1306,6 +1332,11 @@ export default function GameCanvas({
         <fog attach="fog" args={['#0f172a', 100, 900]} />
         <GameScene localPlayerRef={localPlayer} players={players} myId={myId} showCompass={settings.showCompass} freeCam={freeCam} />
         
+        <EffectComposer>
+            <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.9} height={300} intensity={0.5} />
+            <SSAO />
+        </EffectComposer>
+        
         {/* Particles */}
         {particles.map(pt => (
             <mesh key={pt.id} position={[pt.x, getTerrainHeight(pt.x, pt.y) + 2, pt.y]} rotation={[-Math.PI/2, 0, 0]}>
@@ -1317,6 +1348,70 @@ export default function GameCanvas({
         <OrbitControls enabled={freeCam} />
       </Canvas>
       
+      {/* Mobile Controls */}
+      {settings.mobileControls && (
+        <>
+            {/* Steering (Left Side) - Only if sensor steering is OFF */}
+            {!settings.sensorSteering && (
+                <div className="absolute bottom-8 left-8 flex gap-4 pointer-events-auto z-50">
+                    <button 
+                        className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full border border-white/20 active:bg-white/30 flex items-center justify-center select-none touch-none"
+                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowLeft'] = true; }}
+                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowLeft'] = false; }}
+                    >
+                        <span className="text-3xl text-white">←</span>
+                    </button>
+                    <button 
+                        className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full border border-white/20 active:bg-white/30 flex items-center justify-center select-none touch-none"
+                        onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowRight'] = true; }}
+                        onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowRight'] = false; }}
+                    >
+                        <span className="text-3xl text-white">→</span>
+                    </button>
+                </div>
+            )}
+
+            {/* Actions (Right Side) */}
+            <div className="absolute bottom-8 right-8 grid grid-cols-2 gap-4 pointer-events-auto z-50">
+                {/* Brake / Reverse */}
+                <button 
+                    className="w-16 h-16 bg-red-500/20 backdrop-blur-md rounded-full border border-red-500/40 active:bg-red-500/40 flex items-center justify-center select-none touch-none"
+                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowDown'] = true; }}
+                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowDown'] = false; }}
+                >
+                    <span className="text-xl text-red-200 font-bold">S</span>
+                </button>
+
+                {/* Gas */}
+                <button 
+                    className="w-20 h-20 bg-green-500/20 backdrop-blur-md rounded-full border border-green-500/40 active:bg-green-500/40 flex items-center justify-center -mt-8 select-none touch-none"
+                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowUp'] = true; }}
+                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ArrowUp'] = false; }}
+                >
+                    <span className="text-3xl text-green-200 font-bold">W</span>
+                </button>
+                
+                {/* Drift */}
+                <button 
+                    className="w-16 h-16 bg-yellow-500/20 backdrop-blur-md rounded-full border border-yellow-500/40 active:bg-yellow-500/40 flex items-center justify-center select-none touch-none"
+                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = true; }}
+                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['Space'] = false; }}
+                >
+                    <span className="text-xl text-yellow-200 font-bold">D</span>
+                </button>
+
+                {/* Nitro */}
+                <button 
+                    className="w-16 h-16 bg-blue-500/20 backdrop-blur-md rounded-full border border-blue-500/40 active:bg-blue-500/40 flex items-center justify-center select-none touch-none"
+                    onTouchStart={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = true; }}
+                    onTouchEnd={(e) => { e.preventDefault(); localPlayer.current.keys['ShiftLeft'] = false; }}
+                >
+                    <span className="text-xl text-blue-200 font-bold">N</span>
+                </button>
+            </div>
+        </>
+      )}
+
       {/* HUD Overlay */}
       
       {/* Top Left: Exit Game Button */}
