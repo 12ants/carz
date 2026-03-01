@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import GameCanvas from './components/GameCanvas';
+import React, { useState, useEffect, Suspense } from 'react';
+const GameCanvas = React.lazy(() => import('./components/GameCanvas'));
 import { socket } from './services/socket';
 import { Player } from './types';
 
@@ -28,6 +28,13 @@ export default function App() {
     showLog: true,
     mobileControls: false,
     sensorSteering: false,
+    resolution: 'medium', // low, medium, high
+    shadows: true,
+    particles: 'high', // low, high
+    viewDistance: 1500,
+    bloom: true,
+    antialiasing: true,
+    dayNightCycle: true,
   });
 
   useEffect(() => {
@@ -105,7 +112,9 @@ export default function App() {
         carAngle: Math.PI,
         score: 0,
         hasGoods: false,
-        targetZoneIndex: 0
+        targetZoneIndex: 0,
+        damage: 0,
+        headlightsOn: false
       }
     };
     setPlayers(initialPlayers);
@@ -405,6 +414,99 @@ export default function App() {
                     </div>
                   )}
 
+                  <div className="border-t border-slate-700 pt-4 mt-4">
+                      <h3 className="text-yellow-400 font-bold mb-3">Performance</h3>
+                      
+                      <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Resolution</label>
+                              <select 
+                                  value={settings.resolution}
+                                  onChange={(e) => setSettings(prev => ({...prev, resolution: e.target.value}))}
+                                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"
+                              >
+                                  <option value="low">Low</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="high">High</option>
+                              </select>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Shadows</label>
+                              <button 
+                                onClick={() => setSettings(prev => ({...prev, shadows: !prev.shadows}))}
+                                className={`w-12 h-6 rounded-full transition-colors relative ${settings.shadows ? 'bg-green-500' : 'bg-slate-600'}`}
+                              >
+                                <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.shadows ? 'translate-x-7' : 'translate-x-1'}`} />
+                              </button>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Particles</label>
+                              <select 
+                                  value={settings.particles}
+                                  onChange={(e) => setSettings(prev => ({...prev, particles: e.target.value}))}
+                                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"
+                              >
+                                  <option value="low">Low</option>
+                                  <option value="high">High</option>
+                              </select>
+                          </div>
+                          
+                          <div className="space-y-1">
+                            <div className="flex justify-between">
+                              <label className="font-bold text-white">View Distance</label>
+                              <span className="text-yellow-400 font-mono">{settings.viewDistance}m</span>
+                            </div>
+                            <input 
+                              type="range" 
+                              min="500" 
+                              max="3000" 
+                              step="100"
+                              value={settings.viewDistance}
+                              onChange={(e) => setSettings(prev => ({...prev, viewDistance: parseInt(e.target.value)}))}
+                              className="w-full accent-yellow-400"
+                            />
+                          </div>
+                      </div>
+                  </div>
+
+                  <div className="border-t border-slate-700 pt-4 mt-4">
+                      <h3 className="text-yellow-400 font-bold mb-3">Visuals</h3>
+                      
+                      <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Bloom</label>
+                              <button 
+                                onClick={() => setSettings(prev => ({...prev, bloom: !prev.bloom}))}
+                                className={`w-12 h-6 rounded-full transition-colors relative ${settings.bloom ? 'bg-green-500' : 'bg-slate-600'}`}
+                              >
+                                <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.bloom ? 'translate-x-7' : 'translate-x-1'}`} />
+                              </button>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Anti-aliasing</label>
+                              <button 
+                                onClick={() => setSettings(prev => ({...prev, antialiasing: !prev.antialiasing}))}
+                                className={`w-12 h-6 rounded-full transition-colors relative ${settings.antialiasing ? 'bg-green-500' : 'bg-slate-600'}`}
+                              >
+                                <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.antialiasing ? 'translate-x-7' : 'translate-x-1'}`} />
+                              </button>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                              <label className="font-bold text-white">Day/Night Cycle</label>
+                              <button 
+                                onClick={() => setSettings(prev => ({...prev, dayNightCycle: !prev.dayNightCycle}))}
+                                className={`w-12 h-6 rounded-full transition-colors relative ${settings.dayNightCycle ? 'bg-green-500' : 'bg-slate-600'}`}
+                              >
+                                <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.dayNightCycle ? 'translate-x-7' : 'translate-x-1'}`} />
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+
                   <button
                     onClick={handleGoToIntro}
                     className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg shadow-md transition-transform active:scale-95 mt-4"
@@ -446,13 +548,20 @@ export default function App() {
         </>
       ) : (
         <div className="fixed inset-0 w-screen h-screen z-50 bg-slate-900">
-          <GameCanvas 
-            initialPlayers={players} 
-            onExitGame={handleGoToIntro} 
-            settings={settings} 
-            setSettings={setSettings}
-            isSinglePlayer={Object.keys(players).length === 1 && players['local-player'] !== undefined}
-          />
+          <Suspense fallback={
+            <div className="flex flex-col items-center justify-center h-full text-white space-y-4">
+              <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              <div className="text-xl font-bold animate-pulse">Loading Game Assets...</div>
+            </div>
+          }>
+            <GameCanvas 
+              initialPlayers={players} 
+              onExitGame={handleGoToIntro} 
+              settings={settings} 
+              setSettings={setSettings}
+              isSinglePlayer={Object.keys(players).length === 1 && players['local-player'] !== undefined}
+            />
+          </Suspense>
         </div>
       )}
     </div>

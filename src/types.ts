@@ -3,6 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
+export type PowerUpType = 'speed' | 'shield' | 'multiplier';
+
+export type PowerUp = {
+  id: string;
+  type: PowerUpType;
+  x: number;
+  y: number;
+  active: boolean;
+};
+
 export type Player = {
   id: string;
   x: number;
@@ -20,4 +30,8 @@ export type Player = {
   carX: number;
   carY: number;
   carAngle: number;
+  activePowerUp?: PowerUpType;
+  powerUpEndTime?: number;
+  damage: number;
+  headlightsOn: boolean;
 };

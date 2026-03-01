@@ -6,11 +6,11 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { socket } from '../services/socket';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PerspectiveCamera, Environment, Text, OrbitControls } from '@react-three/drei';
+import { PerspectiveCamera, Environment, Text, OrbitControls, Sky } from '@react-three/drei';
 import { EffectComposer, Bloom, N8AO } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { createNoise2D } from 'simplex-noise';
-import { Player } from '../types';
+import { Player, PowerUp, PowerUpType } from '../types';
 import useSound from '../hooks/useSound';
 
 const noise2D = createNoise2D();
@@ -19,42 +19,67 @@ const TRACK_WIDTH = 1200;
 const TRACK_HEIGHT = 850;
 
 // Car physics constants
-const ACCELERATION = 0.12;
-const MAX_SPEED = 3.2;
-const NITRO_SPEED = 5.5;
-const NITRO_ACCEL = 0.25;
-const FRICTION = 0.97;
-const TURN_SPEED = 0.06;
-const DRIFT_FACTOR = 0.96;
-const GRAVITY = 0.6;
-const JUMP_FORCE = 1.2;
+const ACCELERATION = 0.2;
+const MAX_SPEED = 4.0;
+const MAX_SPEED_BOOST = 6.0;
+const NITRO_SPEED = 7.0;
+const NITRO_ACCEL = 0.4;
+const FRICTION = 0.96;
+const TURN_SPEED = 0.07;
+const DRIFT_FACTOR = 0.95;
+const GRAVITY = 0.35; // Even floatier
+const JUMP_FORCE = 2.0;
+const SUSPENSION_STIFFNESS = 0.4; // Very bouncy
+const SUSPENSION_DAMPING = 0.1;
+const SUSPENSION_REST_LENGTH = 2.0;
+const TIRE_GRIP_LATERAL = 0.92;
+const TIRE_GRIP_LONGITUDINAL = 0.98;
+const ROLL_STIFFNESS = 0.08;
+const PITCH_STIFFNESS = 0.08;
 
 // Track Geometry
 const TRACK_RADIUS = 50; // Slightly narrower for more technical turns
 const TRACK_SEGMENTS = [
-    { start: {x: 150, y: 500}, end: {x: 450, y: 500}, angle: 0 },
-    { start: {x: 450, y: 500}, end: {x: 450, y: 300}, angle: -Math.PI/2 },
-    { start: {x: 450, y: 300}, end: {x: 300, y: 300}, angle: Math.PI },
-    { start: {x: 300, y: 300}, end: {x: 300, y: 100}, angle: -Math.PI/2 },
-    { start: {x: 300, y: 100}, end: {x: 750, y: 100}, angle: 0 },
-    { start: {x: 750, y: 100}, end: {x: 750, y: 400}, angle: Math.PI/2 },
-    { start: {x: 750, y: 400}, end: {x: 600, y: 400}, angle: Math.PI },
-    { start: {x: 600, y: 400}, end: {x: 600, y: 600}, angle: Math.PI/2 },
-    { start: {x: 600, y: 600}, end: {x: 950, y: 600}, angle: 0 },
-    { start: {x: 950, y: 600}, end: {x: 950, y: 150}, angle: -Math.PI/2 },
-    { start: {x: 950, y: 150}, end: {x: 1100, y: 150}, angle: 0 },
-    { start: {x: 1100, y: 150}, end: {x: 1100, y: 750}, angle: Math.PI/2 },
-    { start: {x: 1100, y: 750}, end: {x: 150, y: 750}, angle: Math.PI },
-    { start: {x: 150, y: 750}, end: {x: 150, y: 500}, angle: -Math.PI/2 }
+    // Start / Main Straight
+    { start: {x: 100, y: 750}, end: {x: 600, y: 750}, angle: 0 },
+    
+    // The "Big Jump" Ramp Section
+    { start: {x: 600, y: 750}, end: {x: 900, y: 750}, angle: 0 },
+    
+    // East Downhill
+    { start: {x: 900, y: 750}, end: {x: 900, y: 500}, angle: -Math.PI/2 },
+    
+    // "The Snake" Chicane
+    { start: {x: 900, y: 500}, end: {x: 700, y: 500}, angle: Math.PI },
+    { start: {x: 700, y: 500}, end: {x: 700, y: 350}, angle: -Math.PI/2 },
+    { start: {x: 700, y: 350}, end: {x: 900, y: 350}, angle: 0 },
+    
+    // South Straight
+    { start: {x: 900, y: 350}, end: {x: 900, y: 100}, angle: -Math.PI/2 },
+    
+    // "Canyon Run" (Low elevation)
+    { start: {x: 900, y: 100}, end: {x: 400, y: 100}, angle: Math.PI },
+    
+    // "Mountain Climb" (High elevation)
+    { start: {x: 400, y: 100}, end: {x: 100, y: 100}, angle: Math.PI },
+    
+    // West Side Return
+    { start: {x: 100, y: 100}, end: {x: 100, y: 400}, angle: Math.PI/2 },
+    
+    // Inner Loop
+    { start: {x: 100, y: 400}, end: {x: 400, y: 400}, angle: 0 },
+    { start: {x: 400, y: 400}, end: {x: 400, y: 600}, angle: Math.PI/2 },
+    { start: {x: 400, y: 600}, end: {x: 100, y: 600}, angle: Math.PI },
+    { start: {x: 100, y: 600}, end: {x: 100, y: 750}, angle: Math.PI/2 },
 ];
 
 const DELIVERY_ZONES = [
-  { x: 300, y: 500, name: 'Factory', color: '#ff00ff' },
-  { x: 300, y: 100, name: 'Warehouse', color: '#00ffff' },
-  { x: 750, y: 250, name: 'Docks', color: '#ffff00' },
-  { x: 775, y: 600, name: 'Store', color: '#ff8800' },
-  { x: 1100, y: 450, name: 'Market', color: '#00ff00' },
-  { x: 625, y: 750, name: 'HQ', color: '#ff0000' },
+  { x: 200, y: 750, name: 'Start Line', color: '#ff00ff' },
+  { x: 800, y: 750, name: 'Jump Zone', color: '#00ffff' },
+  { x: 800, y: 425, name: 'Chicane', color: '#ffff00' },
+  { x: 900, y: 150, name: 'Canyon', color: '#ff8800' },
+  { x: 250, y: 100, name: 'Summit', color: '#00ff00' },
+  { x: 250, y: 500, name: 'Inner City', color: '#ff0000' },
 ];
 
 // Math helpers for collision
@@ -91,6 +116,44 @@ const isPointOnTrackMath = (x: number, y: number, buffer: number = 0): boolean =
 };
 
 const getTerrainHeight = (x: number, y: number): number => {
+  // Special Track Features (Ramps)
+  // Jump Ramp (Top Right Straight)
+  if (y > 700 && y < 800 && x > 600 && x < 900) {
+      const progress = (x - 600) / 300;
+      if (progress < 0.85) {
+          return Math.pow(progress, 2) * 60; 
+      } else {
+          return 0; 
+      }
+  }
+
+  // Biome Logic
+  const isMountain = x < 400;
+  const isDesert = x > 600 && y < 400;
+  const isCanyon = y < 200 && x > 400 && x < 900;
+  
+  let biomeHeight = 0;
+  
+  if (isMountain) {
+      // High frequency, jagged noise
+      const n1 = noise2D(x * 0.005, y * 0.005) * 80;
+      const n2 = Math.abs(noise2D(x * 0.02, y * 0.02)) * 30;
+      biomeHeight = n1 + n2 + 20;
+  } else if (isDesert) {
+      // Rolling dunes
+      const n1 = Math.sin(x * 0.01) * Math.cos(y * 0.01) * 15;
+      const n2 = noise2D(x * 0.005, y * 0.005) * 10;
+      biomeHeight = n1 + n2 + 5;
+  } else if (isCanyon) {
+      // Deep cut
+      const n1 = noise2D(x * 0.01, y * 0.01) * 5;
+      biomeHeight = -20 + n1;
+  } else {
+      // Plains / City (Flat with slight roll)
+      biomeHeight = noise2D(x * 0.002, y * 0.002) * 10;
+  }
+
+  // Track Flattening
   const p = {x, y};
   let minDist = Infinity;
   for (const seg of TRACK_SEGMENTS) {
@@ -98,97 +161,365 @@ const getTerrainHeight = (x: number, y: number): number => {
     if (d < minDist) minDist = d;
   }
   
-  if (minDist <= TRACK_RADIUS) return 0;
+  if (minDist <= TRACK_RADIUS) return 0; // Flat track
   
-  const blendDist = 60;
   const distFromEdge = minDist - TRACK_RADIUS;
-  const blend = Math.min(1, distFromEdge / blendDist);
+  const blendDist = 60;
+  const blend = Math.min(1, Math.pow(distFromEdge / blendDist, 2));
   
-  const n1 = noise2D(x * 0.002, y * 0.002) * 40 + 20;
-  const n2 = noise2D(x * 0.01, y * 0.01) * 10;
-  const n3 = noise2D(x * 0.05, y * 0.05) * 2;
-  const n4 = Math.max(0, noise2D(x * 0.001, y * 0.001)) * 80;
+  // Kicker Lip
+  let kicker = 0;
+  if (distFromEdge < 15) {
+      kicker = (distFromEdge / 15) * 3;
+  }
   
-  return Math.max(-5, (n1 + n2 + n3 + n4)) * blend;
+  return biomeHeight * blend + kicker;
 };
 
+// Generate Decorations once
+const DECORATIONS = (() => {
+    const items: { type: 'tree' | 'rock' | 'house' | 'building' | 'lamp' | 'billboard' | 'guardrail' | 'tire' | 'cone' | 'cactus', pos: [number, number, number], scale: number, rotation: number, color?: string, length?: number, radius: number }[] = [];
+    const count = 800; 
+    const seed = 42;
+    const rng = (s: number) => {
+        const x = Math.sin(s) * 10000;
+        return x - Math.floor(x);
+    };
+    let s = seed;
+
+    for (let i = 0; i < count; i++) {
+      const x = rng(s++) * 3000 - 900; 
+      const z = rng(s++) * 3000 - 1075;
+      
+      if (!isPointOnTrackMath(x, z, 30)) {
+        const rand = rng(s++);
+        let type: 'tree' | 'rock' | 'house' | 'building' | 'lamp' | 'cactus' = 'tree';
+        let scale = 1;
+        let rotation = rng(s++) * Math.PI * 2;
+        let color = undefined;
+        let radius = 2; // Collision radius
+        
+        const distFromCenter = Math.sqrt((x-600)*(x-600) + (z-400)*(z-400));
+        
+        // Biome Logic
+        const isMountain = x < 400;
+        const isDesert = x > 600 && z < 400;
+        const isCanyon = z < 200 && x > 400 && x < 900;
+        
+        if (isDesert) {
+            if (rand > 0.6) {
+                type = 'cactus';
+                scale = 1 + rng(s++) * 1.5;
+                radius = 1.5;
+            } else {
+                type = 'rock';
+                scale = 1 + rng(s++) * 2;
+                color = '#d4b483'; 
+                radius = 3 * scale;
+            }
+        } else if (isMountain) {
+            if (rand > 0.5) {
+                type = 'tree'; 
+                color = '#0f172a'; 
+                scale = 3 + rng(s++) * 4;
+                radius = 1.5;
+            } else {
+                type = 'rock';
+                scale = 4 + rng(s++) * 6;
+                color = '#475569'; 
+                radius = 4 * scale;
+            }
+        } else if (isCanyon) {
+             type = 'rock';
+             scale = 2 + rng(s++) * 3;
+             color = '#78350f'; 
+             radius = 3 * scale;
+        } else if (distFromCenter < 600) {
+             if (rand > 0.8) {
+                 type = 'building';
+                 scale = 1 + rng(s++) * 0.5;
+                 color = ['#64748b', '#475569', '#334155'][Math.floor(rng(s++) * 3)];
+                 radius = 12 * scale;
+             } else if (rand > 0.6) {
+                 type = 'house';
+                 scale = 1 + rng(s++) * 0.2;
+                 color = ['#e2e8f0', '#cbd5e1', '#f1f5f9'][Math.floor(rng(s++) * 3)];
+                 radius = 8 * scale;
+             } else {
+                 type = 'tree';
+                 scale = 1.5 + rng(s++) * 2;
+                 radius = 1.5;
+             }
+        } else {
+             if (rand > 0.3) {
+                 type = 'tree';
+                 scale = 2 + rng(s++) * 3;
+                 radius = 1.5;
+             } else {
+                 type = 'rock';
+                 scale = 1 + rng(s++) * 2;
+                 radius = 2 * scale;
+             }
+        }
+
+        const y = getTerrainHeight(x, z);
+        items.push({ type, pos: [x, y, z], scale, rotation, color, radius });
+      }
+    }
+    
+    // Add street lamps along the track
+    TRACK_SEGMENTS.forEach(seg => {
+        const dx = seg.end.x - seg.start.x;
+        const dy = seg.end.y - seg.start.y;
+        const len = Math.sqrt(dx*dx + dy*dy);
+        const angle = Math.atan2(dy, dx);
+        const lampCount = Math.floor(len / 120); 
+        
+        for(let i=1; i<lampCount; i++) {
+            const t = i / lampCount;
+            const x = seg.start.x + dx * t;
+            const z = seg.start.y + dy * t;
+            
+            const offsetX = Math.cos(angle + Math.PI/2) * (TRACK_RADIUS + 8);
+            const offsetZ = Math.sin(angle + Math.PI/2) * (TRACK_RADIUS + 8);
+            
+            const y = getTerrainHeight(x + offsetX, z + offsetZ);
+            items.push({ type: 'lamp', pos: [x + offsetX, y, z + offsetZ], scale: 1, rotation: -angle + Math.PI, color: undefined, radius: 1.0 });
+        }
+    });
+
+    return items;
+})();
+
 // 3D Components
-const CarModel = ({ color, isLocal, drifting }: { color: string, isLocal?: boolean, drifting?: boolean }) => {
+const CarModel = ({ color, isLocal, drifting, powerUp }: { color: string, isLocal?: boolean, drifting?: boolean, powerUp?: PowerUpType }) => {
   return (
     <group scale={[2, 2, 2]}>
-      {/* Body */}
-      <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
-        <boxGeometry args={[2, 1, 4]} />
-        <meshStandardMaterial color={color} metalness={0.8} roughness={0.3} />
+      {/* Shield Effect */}
+      {powerUp === 'shield' && (
+        <mesh position={[0, 1, 0]}>
+            <sphereGeometry args={[2.5, 16, 16]} />
+            <meshBasicMaterial color="#3b82f6" transparent opacity={0.3} wireframe />
+        </mesh>
+      )}
+      
+      {/* Speed Trail Effect */}
+      {powerUp === 'speed' && (
+        <mesh position={[0, 0.5, -3]} rotation={[Math.PI/2, 0, 0]}>
+            <coneGeometry args={[1, 4, 8]} />
+            <meshBasicMaterial color="#ef4444" transparent opacity={0.4} />
+        </mesh>
+      )}
+
+      {/* Main Body Chassis */}
+      <mesh position={[0, 0.6, 0]} castShadow receiveShadow>
+        <boxGeometry args={[1.9, 0.8, 4.2]} />
+        <meshStandardMaterial color={color} metalness={0.6} roughness={0.4} />
       </mesh>
-      {/* Cabin */}
-      <mesh position={[0, 1.2, -0.5]} castShadow>
-        <boxGeometry args={[1.8, 0.8, 2]} />
-        <meshStandardMaterial color="#222" metalness={0.7} roughness={0.2} />
-      </mesh>
-      {/* Spoiler */}
-      <mesh position={[0, 1.1, -2.2]} castShadow>
-        <boxGeometry args={[2.2, 0.2, 0.5]} />
-        <meshStandardMaterial color="#111" metalness={0.8} roughness={0.3} />
-      </mesh>
-      {/* Wheels */}
-      <mesh position={[1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
-        <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="#111" roughness={0.6} />
-      </mesh>
-      <mesh position={[-1.1, 0.4, 1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
-        <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="#111" roughness={0.6} />
-      </mesh>
-      <mesh position={[1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
-        <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="#111" roughness={0.6} />
-      </mesh>
-      <mesh position={[-1.1, 0.4, -1.2]} rotation={[0, 0, Math.PI/2]} castShadow>
-        <cylinderGeometry args={[0.4, 0.4, 0.4, 16]} />
-        <meshStandardMaterial color="#111" roughness={0.6} />
-      </mesh>
-      {/* Headlights */}
-      <mesh position={[0.6, 0.6, 2.05]}>
-        <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={3} />
-      </mesh>
-      <mesh position={[-0.6, 0.6, 2.05]}>
-        <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={3} />
-      </mesh>
-      {/* Taillights */}
-      <mesh position={[0.6, 0.6, -2.05]}>
-        <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={2} />
-      </mesh>
-      <mesh position={[-0.6, 0.6, -2.05]}>
-        <boxGeometry args={[0.5, 0.2, 0.1]} />
-        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={2} />
+
+      {/* Upper Cabin / Roof */}
+      <mesh position={[0, 1.3, -0.4]} castShadow>
+        <boxGeometry args={[1.6, 0.7, 2.2]} />
+        <meshStandardMaterial color="#111" metalness={0.9} roughness={0.1} />
       </mesh>
       
-      {/* Drift Smoke Particles (Simple visual representation attached to car) */}
+      {/* Windshield */}
+      <mesh position={[0, 1.3, 0.75]} rotation={[Math.PI / 8, 0, 0]}>
+        <boxGeometry args={[1.55, 0.65, 0.1]} />
+        <meshStandardMaterial color="#88ccff" metalness={0.9} roughness={0.1} transparent opacity={0.7} />
+      </mesh>
+
+      {/* Rear Window */}
+      <mesh position={[0, 1.3, -1.55]} rotation={[-Math.PI / 8, 0, 0]}>
+        <boxGeometry args={[1.55, 0.65, 0.1]} />
+        <meshStandardMaterial color="#88ccff" metalness={0.9} roughness={0.1} transparent opacity={0.7} />
+      </mesh>
+
+      {/* Side Mirrors */}
+      <mesh position={[0.9, 1.2, 0.5]} rotation={[0, -0.2, 0]}>
+        <boxGeometry args={[0.3, 0.2, 0.1]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      <mesh position={[-0.9, 1.2, 0.5]} rotation={[0, 0.2, 0]}>
+        <boxGeometry args={[0.3, 0.2, 0.1]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+
+      {/* Door Handles */}
+      <mesh position={[0.96, 0.8, -0.2]}>
+        <boxGeometry args={[0.05, 0.05, 0.3]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+      <mesh position={[-0.96, 0.8, -0.2]}>
+        <boxGeometry args={[0.05, 0.05, 0.3]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+
+      {/* Hood Scoop */}
+      <mesh position={[0, 1.05, 1.2]}>
+        <boxGeometry args={[0.8, 0.1, 0.8]} />
+        <meshStandardMaterial color="#111" />
+      </mesh>
+
+      {/* Side Skirts */}
+      <mesh position={[1, 0.3, 0]}>
+        <boxGeometry args={[0.2, 0.4, 3]} />
+        <meshStandardMaterial color="#111" />
+      </mesh>
+      <mesh position={[-1, 0.3, 0]}>
+        <boxGeometry args={[0.2, 0.4, 3]} />
+        <meshStandardMaterial color="#111" />
+      </mesh>
+
+      {/* Rear Diffuser */}
+      <mesh position={[0, 0.3, -2.15]}>
+        <boxGeometry args={[1.6, 0.4, 0.2]} />
+        <meshStandardMaterial color="#111" />
+      </mesh>
+      {[0.4, 0, -0.4].map((x, i) => (
+          <mesh key={i} position={[x, 0.2, -2.25]}>
+              <boxGeometry args={[0.05, 0.4, 0.1]} />
+              <meshStandardMaterial color="#333" />
+          </mesh>
+      ))}
+
+      {/* Exhaust Pipes */}
+      <mesh position={[0.6, 0.3, -2.2]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.4]} />
+        <meshStandardMaterial color="#555" metalness={1} roughness={0.2} />
+      </mesh>
+      <mesh position={[-0.6, 0.3, -2.2]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.4]} />
+        <meshStandardMaterial color="#555" metalness={1} roughness={0.2} />
+      </mesh>
+
+      {/* Spoiler */}
+      <group position={[0, 1.25, -2.1]}>
+        <mesh position={[0, 0.3, 0]} castShadow>
+          <boxGeometry args={[2.2, 0.1, 0.6]} />
+          <meshStandardMaterial color={color} metalness={0.7} roughness={0.3} />
+        </mesh>
+        <mesh position={[0.8, 0, 0]}>
+          <boxGeometry args={[0.1, 0.6, 0.4]} />
+          <meshStandardMaterial color="#111" />
+        </mesh>
+        <mesh position={[-0.8, 0, 0]}>
+          <boxGeometry args={[0.1, 0.6, 0.4]} />
+          <meshStandardMaterial color="#111" />
+        </mesh>
+        {/* Spoiler Winglets */}
+        <mesh position={[1.15, 0.4, 0]} rotation={[0, 0, Math.PI/4]}>
+             <boxGeometry args={[0.1, 0.4, 0.6]} />
+             <meshStandardMaterial color={color} />
+        </mesh>
+        <mesh position={[-1.15, 0.4, 0]} rotation={[0, 0, -Math.PI/4]}>
+             <boxGeometry args={[0.1, 0.4, 0.6]} />
+             <meshStandardMaterial color={color} />
+        </mesh>
+      </group>
+
+      {/* Wheels with Rims & Brake Calipers */}
+      {[
+        [1.1, 0.4, 1.3],
+        [-1.1, 0.4, 1.3],
+        [1.1, 0.4, -1.3],
+        [-1.1, 0.4, -1.3]
+      ].map((pos, i) => (
+        <group key={i} position={pos as [number, number, number]} rotation={[0, 0, Math.PI/2]}>
+          <mesh castShadow>
+            <cylinderGeometry args={[0.45, 0.45, 0.4, 24]} />
+            <meshStandardMaterial color="#111" roughness={0.8} />
+          </mesh>
+          <mesh position={[0, 0.21, 0]}>
+            <cylinderGeometry args={[0.25, 0.25, 0.05, 12]} />
+            <meshStandardMaterial color="#ccc" metalness={0.8} roughness={0.2} />
+          </mesh>
+          {/* Brake Caliper */}
+          <mesh position={[0.2, -0.1, 0]} rotation={[0, 0, 0]}>
+              <boxGeometry args={[0.3, 0.2, 0.15]} />
+              <meshStandardMaterial color="#ef4444" />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Headlights */}
+      <mesh position={[0.6, 0.7, 2.15]}>
+        <boxGeometry args={[0.5, 0.25, 0.1]} />
+        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={5} />
+      </mesh>
+      <mesh position={[-0.6, 0.7, 2.15]}>
+        <boxGeometry args={[0.5, 0.25, 0.1]} />
+        <meshStandardMaterial color="#ffffaa" emissive="#ffffaa" emissiveIntensity={5} />
+      </mesh>
+
+      {/* Taillights */}
+      <mesh position={[0.6, 0.8, -2.15]}>
+        <boxGeometry args={[0.5, 0.2, 0.1]} />
+        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={3} />
+      </mesh>
+      <mesh position={[-0.6, 0.8, -2.15]}>
+        <boxGeometry args={[0.5, 0.2, 0.1]} />
+        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={3} />
+      </mesh>
+      
+      {/* License Plate */}
+      <mesh position={[0, 0.4, -2.16]}>
+          <planeGeometry args={[0.6, 0.2]} />
+          <meshStandardMaterial color="#fff" />
+      </mesh>
+      <Text position={[0, 0.4, -2.17]} fontSize={0.1} color="black" rotation={[0, Math.PI, 0]}>
+          RACE-01
+      </Text>
+      
+      {/* Drift Smoke Particles */}
       {drifting && (
         <group>
           <mesh position={[1.2, 0.2, -1.5]}>
-             <sphereGeometry args={[0.3, 8, 8]} />
-             <meshBasicMaterial color="#aaa" transparent opacity={0.6} />
+             <sphereGeometry args={[0.35, 8, 8]} />
+             <meshBasicMaterial color="#ddd" transparent opacity={0.5} />
           </mesh>
           <mesh position={[-1.2, 0.2, -1.5]}>
-             <sphereGeometry args={[0.3, 8, 8]} />
-             <meshBasicMaterial color="#aaa" transparent opacity={0.6} />
+             <sphereGeometry args={[0.35, 8, 8]} />
+             <meshBasicMaterial color="#ddd" transparent opacity={0.5} />
           </mesh>
         </group>
       )}
 
       {isLocal && (
-        <pointLight position={[0, 2, 4]} intensity={10} distance={20} color="white" />
+        <pointLight position={[0, 2, 4]} intensity={10} distance={25} color="white" />
       )}
     </group>
   );
 };
 
-const Tree = ({ position, scale = 1 }: { position: [number, number, number], scale?: number }) => {
+const Cactus = ({ position, scale = 1 }: { position: [number, number, number], scale?: number }) => {
+  return (
+    <group position={position} scale={scale}>
+      <mesh position={[0, 2, 0]} castShadow>
+        <cylinderGeometry args={[0.5, 0.5, 4]} />
+        <meshStandardMaterial color="#2d6a4f" roughness={0.8} />
+      </mesh>
+      <mesh position={[1, 3, 0]} rotation={[0, 0, -Math.PI/4]}>
+        <cylinderGeometry args={[0.3, 0.3, 2]} />
+        <meshStandardMaterial color="#2d6a4f" roughness={0.8} />
+      </mesh>
+      <mesh position={[1.5, 4, 0]}>
+        <cylinderGeometry args={[0.3, 0.3, 1.5]} />
+        <meshStandardMaterial color="#2d6a4f" roughness={0.8} />
+      </mesh>
+      <mesh position={[-1, 2, 0]} rotation={[0, 0, Math.PI/4]}>
+        <cylinderGeometry args={[0.3, 0.3, 2]} />
+        <meshStandardMaterial color="#2d6a4f" roughness={0.8} />
+      </mesh>
+      <mesh position={[-1.5, 3, 0]}>
+        <cylinderGeometry args={[0.3, 0.3, 1.5]} />
+        <meshStandardMaterial color="#2d6a4f" roughness={0.8} />
+      </mesh>
+    </group>
+  );
+};
+
+const Tree = ({ position, scale = 1, color = '#166534' }: { position: [number, number, number], scale?: number, color?: string }) => {
   return (
     <group position={position} scale={scale}>
       {/* Trunk */}
@@ -199,21 +530,21 @@ const Tree = ({ position, scale = 1 }: { position: [number, number, number], sca
       {/* Leaves */}
       <mesh position={[0, 9, 0]} castShadow>
         <coneGeometry args={[4, 10, 8]} />
-        <meshStandardMaterial color="#2d5a27" />
+        <meshStandardMaterial color={color} />
       </mesh>
       <mesh position={[0, 13, 0]} castShadow>
         <coneGeometry args={[3, 7, 8]} />
-        <meshStandardMaterial color="#3a7532" />
+        <meshStandardMaterial color={color} />
       </mesh>
     </group>
   );
 };
 
-const Rock = ({ position, scale = 1 }: { position: [number, number, number], scale?: number }) => {
+const Rock = ({ position, scale = 1, color = '#666' }: { position: [number, number, number], scale?: number, color?: string }) => {
   return (
     <mesh position={position} scale={scale} castShadow receiveShadow>
       <dodecahedronGeometry args={[1.5, 0]} />
-      <meshStandardMaterial color="#666" roughness={0.9} />
+      <meshStandardMaterial color={color} roughness={0.9} />
     </mesh>
   );
 };
@@ -237,8 +568,92 @@ const CharacterModel = ({ color }: { color: string }) => {
   );
 };
 
-const GrassMesh = () => {
+// Procedural Texture Generation
+const generateTerrainTextures = () => {
+  const size = 512; // Reduced from 1024
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  
+  // Diffuse / Noise Map
+  const imgData = ctx.createImageData(size, size);
+  const data = imgData.data;
+  
+  for (let i = 0; i < size * size; i++) {
+    const x = i % size;
+    const y = Math.floor(i / size);
+    
+    // Multi-layered noise for dirt/grass detail
+    const n1 = noise2D(x * 0.05, y * 0.05);
+    const n2 = noise2D(x * 0.2, y * 0.2) * 0.5;
+    const n3 = Math.random() * 0.2; // High freq grain
+    
+    const val = 0.5 + (n1 + n2 + n3) * 0.3;
+    const c = Math.floor(Math.max(0, Math.min(255, val * 255)));
+    
+    data[i * 4] = c;
+    data[i * 4 + 1] = c;
+    data[i * 4 + 2] = c;
+    data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+  
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(40, 40); // High repeat for detail
+  
+  // Normal Map Generation (Sobel filter approximation)
+  const normalCanvas = document.createElement('canvas');
+  normalCanvas.width = size;
+  normalCanvas.height = size;
+  const normalCtx = normalCanvas.getContext('2d')!;
+  const normalImgData = normalCtx.createImageData(size, size);
+  const normalData = normalImgData.data;
+  
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      
+      // Get neighbors
+      const x1 = (x - 1 + size) % size;
+      const x2 = (x + 1) % size;
+      const y1 = (y - 1 + size) % size;
+      const y2 = (y + 1) % size;
+      
+      const hL = data[(y * size + x1) * 4] / 255;
+      const hR = data[(y * size + x2) * 4] / 255;
+      const hU = data[(y1 * size + x) * 4] / 255;
+      const hD = data[(y2 * size + x) * 4] / 255;
+      
+      // Sobel gradients
+      const dx = (hR - hL) * 2.0; // Strength
+      const dy = (hD - hU) * 2.0;
+      
+      const nz = 1.0;
+      const len = Math.sqrt(dx*dx + dy*dy + nz*nz);
+      
+      // Pack into RGB [0, 255]
+      normalData[i] = ((dx/len) * 0.5 + 0.5) * 255;
+      normalData[i+1] = ((dy/len) * 0.5 + 0.5) * 255;
+      normalData[i+2] = (nz/len) * 255;
+      normalData[i+3] = 255;
+    }
+  }
+  normalCtx.putImageData(normalImgData, 0, 0);
+  
+  const normalMap = new THREE.CanvasTexture(normalCanvas);
+  normalMap.wrapS = THREE.RepeatWrapping;
+  normalMap.wrapT = THREE.RepeatWrapping;
+  normalMap.repeat.set(40, 40);
+  
+  return { map: texture, normalMap: normalMap };
+};
+
+const GrassMesh = React.memo(() => {
   const geomRef = useRef<THREE.PlaneGeometry>(null);
+  const textures = useMemo(() => generateTerrainTextures(), []);
   
   useEffect(() => {
     if (geomRef.current) {
@@ -249,25 +664,52 @@ const GrassMesh = () => {
       for (let i = 0; i < pos.count; i++) {
         const localX = pos.getX(i);
         const localY = pos.getY(i);
+        // Adjust for mesh position to get world coordinates
         const worldX = localX + TRACK_WIDTH/2;
         const worldY = localY + TRACK_HEIGHT/2;
         
         const h = getTerrainHeight(worldX, worldY);
         pos.setZ(i, h);
         
-        if (h < 5) {
-            colorObj.set('#2a5c3a');
-        } else if (h < 20) {
-            colorObj.set('#3a704a');
-        } else if (h < 40) {
-            colorObj.set('#6b705c');
+        // Biome Coloring
+        // Desert (South East)
+        const isDesert = worldX > 600 && worldY < 400;
+        // Mountain (West)
+        const isMountain = worldX < 400;
+        // Canyon (South)
+        const isCanyon = worldY < 200 && worldX > 400 && worldX < 900;
+        
+        if (isCanyon && h < 5) {
+             // Canyon floor / River bed
+             colorObj.set('#78350f'); // Dark earth
+        } else if (isDesert) {
+             // Sand
+             colorObj.set('#d4b483');
+        } else if (isMountain) {
+             if (h > 60) colorObj.set('#f8fafc'); // Snow
+             else if (h > 30) colorObj.set('#64748b'); // Rock
+             else colorObj.set('#57534e'); // Base rock
         } else {
-            colorObj.set('#8a8a8a');
+             // Grassland
+             if (h < 5) colorObj.set('#4ade80'); // Lush grass
+             else colorObj.set('#166534'); // Darker grass
         }
         
-        const noise = noise2D(worldX * 0.1, worldY * 0.1) * 0.05;
+        // Noise variation
+        const noise = noise2D(worldX * 0.05, worldY * 0.05) * 0.1;
         colorObj.offsetHSL(0, 0, noise);
         
+        // Track proximity (Dirt/Gravel near track)
+        const p = {x: worldX, y: worldY};
+        let minDist = Infinity;
+        for (const seg of TRACK_SEGMENTS) {
+            const d = distToSegment(p, seg.start, seg.end);
+            if (d < minDist) minDist = d;
+        }
+        if (minDist < TRACK_RADIUS + 15 && minDist > TRACK_RADIUS) {
+            colorObj.lerp(new THREE.Color('#a8a29e'), 0.7); // Gravel edge
+        }
+
         colors[i * 3] = colorObj.r;
         colors[i * 3 + 1] = colorObj.g;
         colors[i * 3 + 2] = colorObj.b;
@@ -281,13 +723,20 @@ const GrassMesh = () => {
 
   return (
     <mesh position={[TRACK_WIDTH/2, TRACK_HEIGHT/2, -0.1]} receiveShadow castShadow>
-      <planeGeometry ref={geomRef} args={[3000, 3000, 200, 200]} />
-      <meshStandardMaterial vertexColors roughness={0.9} metalness={0.1} />
+      <planeGeometry ref={geomRef} args={[3000, 3000, 128, 128]} />
+      <meshStandardMaterial 
+        vertexColors 
+        map={textures.map}
+        normalMap={textures.normalMap}
+        roughness={0.9} 
+        metalness={0.1}
+        normalScale={new THREE.Vector2(1.5, 1.5)}
+      />
     </mesh>
   );
-};
+});
 
-const TrackMesh = () => {
+const TrackMesh = React.memo(() => {
   const segments = useMemo(() => {
     return TRACK_SEGMENTS.map((seg, i) => {
       const dx = seg.end.x - seg.start.x;
@@ -311,17 +760,33 @@ const TrackMesh = () => {
       
       {/* Track Segments */}
       {segments.map((seg) => (
-        <mesh key={seg.id} position={[seg.centerX, seg.centerY, 0.1]} rotation={[0, 0, seg.angle]} receiveShadow>
-          <planeGeometry args={[seg.length, TRACK_RADIUS * 2]} />
-          <meshStandardMaterial color="#444" roughness={0.7} metalness={0.2} />
-        </mesh>
+        <group key={seg.id} position={[seg.centerX, seg.centerY, 0.1]} rotation={[0, 0, seg.angle]}>
+            <mesh receiveShadow>
+                <planeGeometry args={[seg.length, TRACK_RADIUS * 2]} />
+                <meshStandardMaterial color="#333" roughness={0.8} metalness={0.1} />
+            </mesh>
+            {/* Road Markings (Center Line) */}
+            <mesh position={[0, 0, 0.1]}>
+                <planeGeometry args={[seg.length, 2]} />
+                <meshBasicMaterial color="#fbbf24" />
+            </mesh>
+            {/* Side Lines */}
+            <mesh position={[0, TRACK_RADIUS - 2, 0.1]}>
+                <planeGeometry args={[seg.length, 1]} />
+                <meshBasicMaterial color="#fff" />
+            </mesh>
+            <mesh position={[0, -TRACK_RADIUS + 2, 0.1]}>
+                <planeGeometry args={[seg.length, 1]} />
+                <meshBasicMaterial color="#fff" />
+            </mesh>
+        </group>
       ))}
 
       {/* Smooth Corners */}
       {corners.map((pos, i) => (
         <mesh key={i} position={[pos.x, pos.y, 0.1]} receiveShadow>
           <circleGeometry args={[TRACK_RADIUS, 32]} />
-          <meshStandardMaterial color="#444" roughness={0.7} metalness={0.2} />
+          <meshStandardMaterial color="#333" roughness={0.8} metalness={0.1} />
         </mesh>
       ))}
       
@@ -332,7 +797,7 @@ const TrackMesh = () => {
       </mesh>
     </group>
   );
-};
+});
 
 const CompassArrow = ({ localPlayerRef }: { localPlayerRef: React.MutableRefObject<any> }) => {
   const arrowRef = useRef<THREE.Group>(null);
@@ -364,48 +829,555 @@ const CompassArrow = ({ localPlayerRef }: { localPlayerRef: React.MutableRefObje
   );
 };
 
+const AnimatedFlag = ({ position, color }: { position: [number, number, number], color: string }) => {
+  const flagRef = useRef<THREE.Mesh>(null);
+  useFrame((state) => {
+    if (flagRef.current) {
+      const t = state.clock.elapsedTime;
+      flagRef.current.rotation.y = Math.sin(t * 3) * 0.3;
+      flagRef.current.rotation.z = Math.cos(t * 2) * 0.1;
+    }
+  });
+  return (
+    <group position={position}>
+      <mesh position={[0, 10, 0]}>
+        <cylinderGeometry args={[0.3, 0.3, 20]} />
+        <meshStandardMaterial color="#888" metalness={0.8} roughness={0.2} />
+      </mesh>
+      <mesh ref={flagRef} position={[3, 18, 0]}>
+        <planeGeometry args={[6, 4, 10, 10]} />
+        <meshStandardMaterial color={color} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+};
+
+const SpinningTire = ({ position, speed = 0.05 }: { position: [number, number, number], speed?: number }) => {
+  const ref = useRef<THREE.Mesh>(null);
+  useFrame(() => {
+    if (ref.current) ref.current.rotation.z += speed;
+  });
+  return (
+    <mesh ref={ref} position={position} rotation={[0, Math.PI/2, 0]} castShadow>
+      <torusGeometry args={[2, 0.8, 16, 32]} />
+      <meshStandardMaterial color="#111" roughness={0.9} />
+    </mesh>
+  );
+};
+
+const Rain = () => {
+  const count = 3000;
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const particles = useMemo(() => {
+    return new Array(count).fill(0).map(() => ({
+      x: Math.random() * 2000 - 500,
+      y: Math.random() * 200 + 50,
+      z: Math.random() * 2000 - 500,
+      speed: Math.random() * 3 + 3
+    }));
+  }, [count]);
+
+  useFrame(() => {
+    if (!mesh.current) return;
+    particles.forEach((particle, i) => {
+      particle.y -= particle.speed;
+      if (particle.y < 0) particle.y = 200;
+      dummy.position.set(particle.x, particle.y, particle.z);
+      dummy.scale.set(0.05, 1.5, 0.05);
+      dummy.updateMatrix();
+      mesh.current!.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.current.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, count]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshBasicMaterial color="#88ccff" transparent opacity={0.3} />
+    </instancedMesh>
+  );
+};
+
+const WeatherSystem = ({ weather }: { weather: 'clear' | 'rain' | 'fog' }) => {
+  const { scene } = useThree();
+  
+  useEffect(() => {
+    if (!scene.fog) {
+      scene.fog = new THREE.Fog('#0f172a', 100, 900);
+    }
+  }, [scene]);
+
+  useFrame(() => {
+    const targetNear = weather === 'fog' ? 20 : 100;
+    const targetFar = weather === 'fog' ? 200 : (weather === 'rain' ? 400 : 900);
+    const targetColor = new THREE.Color(
+        weather === 'fog' ? '#94a3b8' : 
+        (weather === 'rain' ? '#334155' : '#0f172a')
+    );
+    
+    if (scene.fog instanceof THREE.Fog) {
+      scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetNear, 0.02);
+      scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFar, 0.02);
+      scene.fog.color.lerp(targetColor, 0.02);
+    }
+    
+    if (scene.background instanceof THREE.Color) {
+        scene.background.lerp(targetColor, 0.02);
+    } else {
+        scene.background = targetColor.clone();
+    }
+  });
+
+  const skyProps = useMemo(() => {
+    switch (weather) {
+      case 'rain':
+        return { 
+          turbidity: 10, 
+          rayleigh: 0.5, 
+          mieCoefficient: 0.005, 
+          mieDirectionalG: 0.7, 
+          sunPosition: [0, 0, -100] as [number, number, number] 
+        };
+      case 'fog':
+        return { 
+          turbidity: 20, 
+          rayleigh: 0.1, 
+          mieCoefficient: 0.01, 
+          mieDirectionalG: 0.9, 
+          sunPosition: [0, 10, -100] as [number, number, number] 
+        };
+      case 'clear':
+      default:
+        return { 
+          turbidity: 0.5, 
+          rayleigh: 0.5, 
+          mieCoefficient: 0.005, 
+          mieDirectionalG: 0.7, 
+          sunPosition: [100, 20, 100] as [number, number, number] 
+        };
+    }
+  }, [weather]);
+
+  return (
+    <>
+      <Sky {...skyProps} />
+      {weather === 'rain' ? <Rain /> : null}
+    </>
+  );
+};
+
+const House = ({ position, rotation = 0, scale = 1, color = '#e2e8f0' }: { position: [number, number, number], rotation?: number, scale?: number, color?: string }) => {
+  return (
+    <group position={position} rotation={[0, rotation, 0]} scale={scale}>
+      {/* Base */}
+      <mesh position={[0, 5, 0]} castShadow receiveShadow>
+        <boxGeometry args={[10, 10, 10]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Roof */}
+      <mesh position={[0, 12.5, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+        <coneGeometry args={[9, 5, 4]} />
+        <meshStandardMaterial color="#475569" />
+      </mesh>
+      {/* Door */}
+      <mesh position={[0, 2.5, 5.1]}>
+        <planeGeometry args={[2.5, 5]} />
+        <meshStandardMaterial color="#334155" />
+      </mesh>
+      {/* Window */}
+      <mesh position={[2.5, 6, 5.1]}>
+        <planeGeometry args={[2, 2]} />
+        <meshStandardMaterial color="#94a3b8" emissive="#94a3b8" emissiveIntensity={0.2} />
+      </mesh>
+    </group>
+  );
+};
+
+const Building = ({ position, rotation = 0, scale = 1, height = 30, color = '#64748b' }: { position: [number, number, number], rotation?: number, scale?: number, height?: number, color?: string }) => {
+  return (
+    <group position={position} rotation={[0, rotation, 0]} scale={scale}>
+      <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[15, height, 15]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      {/* Windows */}
+      {Array.from({ length: Math.floor(height / 6) }).map((_, i) => (
+        <group key={i} position={[0, i * 6 + 4, 0]}>
+           <mesh position={[0, 0, 7.6]}>
+             <planeGeometry args={[10, 3]} />
+             <meshStandardMaterial color="#cbd5e1" emissive="#cbd5e1" emissiveIntensity={0.1} />
+           </mesh>
+           <mesh position={[0, 0, -7.6]} rotation={[0, Math.PI, 0]}>
+             <planeGeometry args={[10, 3]} />
+             <meshStandardMaterial color="#cbd5e1" emissive="#cbd5e1" emissiveIntensity={0.1} />
+           </mesh>
+           <mesh position={[7.6, 0, 0]} rotation={[0, Math.PI/2, 0]}>
+             <planeGeometry args={[10, 3]} />
+             <meshStandardMaterial color="#cbd5e1" emissive="#cbd5e1" emissiveIntensity={0.1} />
+           </mesh>
+           <mesh position={[-7.6, 0, 0]} rotation={[0, -Math.PI/2, 0]}>
+             <planeGeometry args={[10, 3]} />
+             <meshStandardMaterial color="#cbd5e1" emissive="#cbd5e1" emissiveIntensity={0.1} />
+           </mesh>
+        </group>
+      ))}
+    </group>
+  );
+};
+
+const StreetLamp = ({ position, rotation = 0 }: { position: [number, number, number], rotation?: number }) => {
+  return (
+    <group position={position} rotation={[0, rotation, 0]}>
+      <mesh position={[0, 6, 0]} castShadow>
+        <cylinderGeometry args={[0.3, 0.3, 12]} />
+        <meshStandardMaterial color="#1e293b" />
+      </mesh>
+      <mesh position={[1.5, 11.5, 0]} rotation={[0, 0, -Math.PI/4]}>
+        <cylinderGeometry args={[0.2, 0.2, 4]} />
+        <meshStandardMaterial color="#1e293b" />
+      </mesh>
+      <mesh position={[3, 13, 0]}>
+         <boxGeometry args={[2, 0.5, 1]} />
+         <meshStandardMaterial color="#1e293b" />
+      </mesh>
+      <mesh position={[3, 12.7, 0]} rotation={[Math.PI/2, 0, 0]}>
+        <planeGeometry args={[1.5, 0.8]} />
+        <meshBasicMaterial color="#fbbf24" />
+      </mesh>
+      <pointLight position={[3, 12, 0]} color="#fbbf24" intensity={2} distance={30} decay={2} />
+    </group>
+  );
+};
+
+const PickupModel = ({ color }: { color: string }) => {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (ref.current) {
+      ref.current.rotation.y += 0.02;
+      ref.current.position.y = 2 + Math.sin(state.clock.elapsedTime * 2) * 0.5;
+    }
+  });
+  return (
+    <group ref={ref}>
+      <mesh castShadow>
+        <boxGeometry args={[3, 3, 3]} />
+        <meshStandardMaterial color={color} metalness={0.5} roughness={0.2} />
+      </mesh>
+      <mesh position={[0, 0, 0]}>
+        <boxGeometry args={[3.2, 0.2, 3.2]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+      <mesh position={[0, 0, 0]} rotation={[0, 0, Math.PI/2]}>
+        <boxGeometry args={[3.2, 0.2, 3.2]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+      <pointLight color={color} intensity={2} distance={10} />
+    </group>
+  );
+};
+
+const DeliveryModel = ({ color }: { color: string }) => {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (ref.current) {
+      ref.current.rotation.y -= 0.01;
+    }
+  });
+  return (
+    <group ref={ref}>
+      {/* Platform */}
+      <mesh position={[0, 0.2, 0]} receiveShadow>
+        <cylinderGeometry args={[8, 9, 1, 8]} />
+        <meshStandardMaterial color="#333" metalness={0.8} roughness={0.2} />
+      </mesh>
+      <mesh position={[0, 0.8, 0]} receiveShadow>
+        <cylinderGeometry args={[6, 6, 0.2, 8]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} />
+      </mesh>
+      {/* Holographic pillars */}
+      {[0, Math.PI/2, Math.PI, -Math.PI/2].map((angle, i) => (
+        <mesh key={i} position={[Math.sin(angle)*6, 2, Math.cos(angle)*6]}>
+          <boxGeometry args={[0.5, 4, 0.5]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2} />
+        </mesh>
+      ))}
+      <pointLight position={[0, 2, 0]} color={color} intensity={3} distance={15} />
+    </group>
+  );
+};
+
+const PowerUpModel = ({ type }: { type: PowerUpType }) => {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (ref.current) {
+      ref.current.rotation.y += 0.03;
+      ref.current.position.y = 2 + Math.sin(state.clock.elapsedTime * 3) * 0.5;
+    }
+  });
+
+  const color = type === 'speed' ? '#ef4444' : type === 'shield' ? '#3b82f6' : '#eab308';
+  const icon = type === 'speed' ? '⚡' : type === 'shield' ? '🛡️' : 'x2';
+
+  return (
+    <group ref={ref}>
+      <mesh castShadow>
+        <octahedronGeometry args={[2, 0]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} metalness={0.8} roughness={0.2} />
+      </mesh>
+      <Text position={[0, 3, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle" outlineWidth={0.1} outlineColor="black">
+        {icon}
+      </Text>
+      <pointLight color={color} intensity={2} distance={10} />
+      {/* Ground glow */}
+      <mesh position={[0, -2, 0]} rotation={[-Math.PI/2, 0, 0]}>
+        <ringGeometry args={[2, 3, 32]} />
+        <meshBasicMaterial color={color} transparent opacity={0.3} />
+      </mesh>
+    </group>
+  );
+};
+
+const Billboard = ({ position, rotation = 0, scale = 1 }: { position: [number, number, number], rotation?: number, scale?: number }) => {
+  return (
+    <group position={position} rotation={[0, rotation, 0]} scale={scale}>
+      <mesh position={[-2, 2.5, 0]} castShadow>
+        <cylinderGeometry args={[0.1, 0.1, 5]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+      <mesh position={[2, 2.5, 0]} castShadow>
+        <cylinderGeometry args={[0.1, 0.1, 5]} />
+        <meshStandardMaterial color="#333" />
+      </mesh>
+      <mesh position={[0, 5, 0]} castShadow>
+        <boxGeometry args={[6, 3, 0.2]} />
+        <meshStandardMaterial color="#fff" />
+      </mesh>
+      <mesh position={[0, 5, 0.11]}>
+        <planeGeometry args={[5.6, 2.6]} />
+        <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={0.2} />
+      </mesh>
+      <Text position={[0, 5, 0.12]} fontSize={0.8} color="black" anchorX="center" anchorY="middle" font="/fonts/Inter-Bold.woff">
+        RACE DAY
+      </Text>
+    </group>
+  );
+};
+
+const Guardrail = ({ position, rotation = 0, length = 10 }: { position: [number, number, number], rotation?: number, length?: number }) => {
+  const postCount = Math.floor(length / 10) + 1;
+  return (
+    <group position={position} rotation={[0, rotation, 0]}>
+      <mesh position={[length/2, 2, 0]} castShadow>
+        <boxGeometry args={[length, 0.5, 0.2]} />
+        <meshStandardMaterial color="#ccc" metalness={0.8} roughness={0.2} />
+      </mesh>
+      {Array.from({ length: postCount }).map((_, i) => (
+        <mesh key={i} position={[i * 10, 1, 0]} castShadow>
+          <cylinderGeometry args={[0.1, 0.1, 2]} />
+          <meshStandardMaterial color="#888" />
+        </mesh>
+      ))}
+    </group>
+  );
+};
+
+const TireStack = ({ position, scale = 1 }: { position: [number, number, number], scale?: number }) => {
+  return (
+    <group position={position} scale={scale}>
+      {[0, 0.4, 0.8].map((y, i) => (
+        <mesh key={i} position={[0, y + 0.2, 0]} castShadow>
+          <torusGeometry args={[0.4, 0.15, 8, 16]} />
+          <meshStandardMaterial color={i % 2 === 0 ? "#ef4444" : "#fff"} roughness={0.8} />
+        </mesh>
+      ))}
+    </group>
+  );
+};
+
+const Cone = ({ position }: { position: [number, number, number] }) => {
+  return (
+    <group position={position}>
+      <mesh position={[0, 0.5, 0]} castShadow>
+        <coneGeometry args={[0.3, 1, 16]} />
+        <meshStandardMaterial color="#f97316" />
+      </mesh>
+      <mesh position={[0, 0.05, 0]}>
+        <boxGeometry args={[0.7, 0.1, 0.7]} />
+        <meshStandardMaterial color="#111" />
+      </mesh>
+    </group>
+  );
+};
+
+// Interactive Props Types
+type InteractiveProp = {
+  id: number;
+  type: 'barrier' | 'ramp' | 'crate';
+  x: number;
+  y: number;
+  rotation: number;
+  active: boolean;
+  health: number;
+};
+
+const BarrierModel = ({ active }: { active: boolean }) => {
+  if (!active) return null;
+  return (
+    <group>
+      <mesh position={[0, 1, 0]} castShadow>
+        <boxGeometry args={[4, 2, 0.5]} />
+        <meshStandardMaterial color="#ef4444" />
+      </mesh>
+      <mesh position={[0, 1, 0]}>
+        <boxGeometry args={[4.1, 1.8, 0.6]} />
+        <meshStandardMaterial color="#fee2e2" wireframe />
+      </mesh>
+    </group>
+  );
+};
+
+const RampModel = () => {
+  return (
+    <group>
+      <mesh position={[0, 1, 0]} rotation={[Math.PI/8, 0, 0]} castShadow receiveShadow>
+        <boxGeometry args={[4, 0.2, 6]} />
+        <meshStandardMaterial color="#3b82f6" />
+      </mesh>
+      <mesh position={[0, 0.5, 2.5]}>
+        <boxGeometry args={[4, 1, 0.2]} />
+        <meshStandardMaterial color="#1d4ed8" />
+      </mesh>
+    </group>
+  );
+};
+
+const CrateModel = ({ active }: { active: boolean }) => {
+  if (!active) return null;
+  return (
+    <mesh position={[0, 1, 0]} castShadow receiveShadow>
+      <boxGeometry args={[2, 2, 2]} />
+      <meshStandardMaterial color="#d97706" />
+    </mesh>
+  );
+};
+
+const InstancedTrees = React.memo(({ data }: { data: any[] }) => {
+  const trunkRef = useRef<THREE.InstancedMesh>(null);
+  const leaves1Ref = useRef<THREE.InstancedMesh>(null);
+  const leaves2Ref = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  useEffect(() => {
+    if (!trunkRef.current || !leaves1Ref.current || !leaves2Ref.current) return;
+    
+    data.forEach((item, i) => {
+      const { pos, scale, color } = item;
+      
+      // Trunk
+      dummy.position.set(pos[0], pos[1] + 3 * scale, pos[2]);
+      dummy.scale.set(scale, scale, scale);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      trunkRef.current!.setMatrixAt(i, dummy.matrix);
+      trunkRef.current!.setColorAt(i, new THREE.Color('#4d2926'));
+      
+      // Leaves 1
+      dummy.position.set(pos[0], pos[1] + 9 * scale, pos[2]);
+      dummy.updateMatrix();
+      leaves1Ref.current!.setMatrixAt(i, dummy.matrix);
+      leaves1Ref.current!.setColorAt(i, new THREE.Color(color));
+      
+      // Leaves 2
+      dummy.position.set(pos[0], pos[1] + 13 * scale, pos[2]);
+      dummy.updateMatrix();
+      leaves2Ref.current!.setMatrixAt(i, dummy.matrix);
+      leaves2Ref.current!.setColorAt(i, new THREE.Color(color));
+    });
+    
+    trunkRef.current.instanceMatrix.needsUpdate = true;
+    leaves1Ref.current.instanceMatrix.needsUpdate = true;
+    leaves2Ref.current.instanceMatrix.needsUpdate = true;
+    
+    if (trunkRef.current.instanceColor) trunkRef.current.instanceColor.needsUpdate = true;
+    if (leaves1Ref.current.instanceColor) leaves1Ref.current.instanceColor.needsUpdate = true;
+    if (leaves2Ref.current.instanceColor) leaves2Ref.current.instanceColor.needsUpdate = true;
+
+  }, [data, dummy]);
+
+  return (
+    <group>
+      <instancedMesh ref={trunkRef} args={[undefined, undefined, data.length]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.6, 0.8, 6, 8]} />
+        <meshStandardMaterial color="#4d2926" />
+      </instancedMesh>
+      <instancedMesh ref={leaves1Ref} args={[undefined, undefined, data.length]} castShadow receiveShadow>
+        <coneGeometry args={[4, 10, 8]} />
+        <meshStandardMaterial />
+      </instancedMesh>
+      <instancedMesh ref={leaves2Ref} args={[undefined, undefined, data.length]} castShadow receiveShadow>
+        <coneGeometry args={[3, 7, 8]} />
+        <meshStandardMaterial />
+      </instancedMesh>
+    </group>
+  );
+});
+
+const InstancedRocks = React.memo(({ data }: { data: any[] }) => {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  useEffect(() => {
+    if (!meshRef.current) return;
+    
+    data.forEach((item, i) => {
+      const { pos, scale, color, rotation } = item;
+      dummy.position.set(pos[0], pos[1], pos[2]);
+      dummy.scale.set(scale, scale, scale);
+      dummy.rotation.set(0, rotation, 0);
+      dummy.updateMatrix();
+      meshRef.current!.setMatrixAt(i, dummy.matrix);
+      meshRef.current!.setColorAt(i, new THREE.Color(color));
+    });
+    
+    meshRef.current.instanceMatrix.needsUpdate = true;
+    if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
+
+  }, [data, dummy]);
+
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, data.length]} castShadow receiveShadow>
+      <dodecahedronGeometry args={[1.5, 0]} />
+      <meshStandardMaterial roughness={0.9} />
+    </instancedMesh>
+  );
+});
+
 const GameScene = ({ 
   localPlayerRef, 
   players, 
   myId,
   showCompass,
-  freeCam
+  freeCam,
+  powerUps,
+  props
 }: { 
   localPlayerRef: React.MutableRefObject<any>, 
   players: Record<string, Player>, 
   myId: string | null,
   showCompass: boolean,
-  freeCam: boolean
+  freeCam: boolean,
+  powerUps: PowerUp[],
+  props: InteractiveProp[]
 }) => {
   const { camera } = useThree();
   const carRef = useRef<THREE.Group>(null);
   const charRef = useRef<THREE.Group>(null);
 
-  const decorations = useMemo(() => {
-    const items: { type: 'tree' | 'rock', pos: [number, number, number], scale: number }[] = [];
-    const count = 500; // Increased for better density
-    const seed = 42;
-    const rng = (s: number) => {
-        const x = Math.sin(s) * 10000;
-        return x - Math.floor(x);
-    };
-    let s = seed;
-
-    for (let i = 0; i < count; i++) {
-      // Area large enough to fill the new draw distance
-      const x = rng(s++) * 3000 - 900; 
-      const z = rng(s++) * 3000 - 1075;
-      
-      // Check if on track using the math helper with a buffer to account for decoration size
-      if (!isPointOnTrackMath(x, z, 20)) {
-        const type = rng(s++) > 0.4 ? 'tree' : 'rock';
-        const scale = type === 'tree' ? 2.5 + rng(s++) * 3.5 : 3 + rng(s++) * 5;
-        const y = getTerrainHeight(x, z);
-        items.push({ type, pos: [x, y, z], scale });
-      }
-    }
-    return items;
-  }, []);
+  const decorations = DECORATIONS;
+  const trees = useMemo(() => decorations.filter(d => d.type === 'tree'), [decorations]);
+  const rocks = useMemo(() => decorations.filter(d => d.type === 'rock'), [decorations]);
+  const otherDecorations = useMemo(() => decorations.filter(d => d.type !== 'tree' && d.type !== 'rock'), [decorations]);
   
   useFrame((state, delta) => {
     if (localPlayerRef.current && carRef.current && !freeCam) {
@@ -433,28 +1405,22 @@ const GameScene = ({
           camera.lookAt(p.x, charH, p.y);
       } else {
           const carH = getTerrainHeight(p.x, p.y);
-          carRef.current.position.set(p.x, p.z ?? carH, p.y);
+          // Apply suspension offset to car visual position
+          carRef.current.position.set(p.x, (p.z ?? carH) + p.suspensionY, p.y);
+          
+          // Apply body roll and pitch
+          carRef.current.rotation.order = 'YXZ';
           carRef.current.rotation.y = -p.angle + Math.PI/2;
           
-          // Tilt car based on terrain/air
+          // Tilt car based on terrain/air + physics pitch/roll
           if (p.z && p.z > (getTerrainHeight(p.x, p.y) + 1)) {
               // In air - slight nose dive or stabilize
-              carRef.current.rotation.x = THREE.MathUtils.lerp(carRef.current.rotation.x, -0.1, 0.05);
-              carRef.current.rotation.z = THREE.MathUtils.lerp(carRef.current.rotation.z, 0, 0.05);
+              carRef.current.rotation.x = THREE.MathUtils.lerp(carRef.current.rotation.x, -0.1 + p.pitch, 0.05);
+              carRef.current.rotation.z = THREE.MathUtils.lerp(carRef.current.rotation.z, p.roll, 0.05);
           } else {
-              // On ground - align with terrain normal (simplified)
-              // We can sample 3 points to get normal, but for now just flat or simple tilt
-              // Let's just reset X/Z rotation for stability
-              carRef.current.rotation.x = 0;
-              carRef.current.rotation.z = 0;
-              
-              // Add drift tilt
-              if (p.drifting) {
-                  // Tilt opposite to turn? or into turn?
-                  // Usually cars lean outside the turn
-                  // We need to know turn direction.
-                  // Simplified: just a bit of roll
-              }
+              // On ground - align with terrain normal (simplified) + physics pitch/roll
+              carRef.current.rotation.x = p.pitch;
+              carRef.current.rotation.z = p.roll;
           }
           
           if (charRef.current) {
@@ -498,40 +1464,99 @@ const GameScene = ({
       
       <TrackMesh />
       
+      {/* Start Line Decorations */}
+      <AnimatedFlag position={[300, 0, 430]} color="#ef4444" />
+      <AnimatedFlag position={[300, 0, 570]} color="#3b82f6" />
+      <SpinningTire position={[280, 2.8, 430]} speed={0.1} />
+      <SpinningTire position={[280, 2.8, 440]} speed={-0.08} />
+      <SpinningTire position={[320, 2.8, 560]} speed={0.12} />
+      <SpinningTire position={[320, 2.8, 570]} speed={-0.09} />
+      
       {/* Decorative Elements */}
-      {decorations.map((item, i) => (
-        item.type === 'tree' ? (
-          <Tree key={i} position={item.pos} scale={item.scale} />
-        ) : (
-          <Rock key={i} position={item.pos} scale={item.scale} />
+      <InstancedTrees data={trees} />
+      <InstancedRocks data={rocks} />
+      
+      {otherDecorations.map((item, i) => {
+        switch (item.type) {
+            case 'house': return <House key={i} position={item.pos} scale={item.scale} rotation={item.rotation} color={item.color} />;
+            case 'building': return <Building key={i} position={item.pos} scale={item.scale} rotation={item.rotation} color={item.color} />;
+            case 'lamp': return <StreetLamp key={i} position={item.pos} rotation={item.rotation} />;
+            case 'billboard': return <Billboard key={i} position={item.pos} rotation={item.rotation} scale={item.scale} />;
+            case 'guardrail': return <Guardrail key={i} position={item.pos} rotation={item.rotation} length={item.length} />;
+            case 'tire': return <TireStack key={i} position={item.pos} scale={item.scale} />;
+            case 'cone': return <Cone key={i} position={item.pos} />;
+            case 'cactus': return <Cactus key={i} position={item.pos} scale={item.scale} />;
+            default: return null;
+        }
+      })}
+      
+      {/* Interactive Props */}
+      {props.map(prop => (
+          <group key={prop.id} position={[prop.x, getTerrainHeight(prop.x, prop.y), prop.y]} rotation={[0, prop.rotation, 0]}>
+              {prop.type === 'barrier' && <BarrierModel active={prop.active} />}
+              {prop.type === 'ramp' && <RampModel />}
+              {prop.type === 'crate' && <CrateModel active={prop.active} />}
+          </group>
+      ))}
+
+      {/* PowerUps */}
+      {powerUps.map((pu) => (
+        pu.active && (
+            <group key={pu.id} position={[pu.x, getTerrainHeight(pu.x, pu.y), pu.y]}>
+                <PowerUpModel type={pu.type} />
+            </group>
         )
       ))}
-      
+
       {/* Delivery Zones */}
       {DELIVERY_ZONES.map((zone, i) => {
-        const isTarget = localPlayerRef.current?.targetZoneIndex === i;
+        const myPlayer = players[myId || ''];
+        const isTarget = myPlayer?.targetZoneIndex === i;
+        const isPickup = isTarget && !myPlayer.hasGoods;
+        const isDelivery = isTarget && myPlayer.hasGoods;
+
         return (
           <group key={i} position={[zone.x, 0.1, zone.y]}>
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
               <circleGeometry args={[20, 32]} />
               <meshBasicMaterial color={zone.color} transparent opacity={isTarget ? 0.6 : 0.2} />
             </mesh>
-            {isTarget && (
-              <mesh position={[0, 10, 0]}>
-                <cylinderGeometry args={[15, 15, 20, 16]} />
-                <meshBasicMaterial color={zone.color} transparent opacity={0.3} />
-              </mesh>
+            
+            {isPickup && <PickupModel color={zone.color} />}
+            {isDelivery && <DeliveryModel color={zone.color} />}
+            
+            {!isTarget && (
+               <mesh position={[0, 0.5, 0]} rotation={[-Math.PI/2, 0, 0]}>
+                 <ringGeometry args={[18, 20, 32]} />
+                 <meshBasicMaterial color={zone.color} transparent opacity={0.3} />
+               </mesh>
             )}
-            <Text position={[0, 5, 0]} fontSize={4} color="white" anchorX="center" anchorY="middle" outlineWidth={0.2} outlineColor="black">
+
+            <Text position={[0, 8, 0]} fontSize={4} color="white" anchorX="center" anchorY="middle" outlineWidth={0.2} outlineColor="black">
               {zone.name}
             </Text>
+            {isPickup && (
+                <Text position={[0, 5, 0]} fontSize={2} color="#fbbf24" anchorX="center" anchorY="middle" outlineWidth={0.1} outlineColor="black">
+                  PICKUP
+                </Text>
+            )}
+            {isDelivery && (
+                <Text position={[0, 5, 0]} fontSize={2} color="#4ade80" anchorX="center" anchorY="middle" outlineWidth={0.1} outlineColor="black">
+                  DELIVERY
+                </Text>
+            )}
           </group>
         );
       })}
 
       {/* Local Player */}
       <group ref={carRef}>
-        <CarModel color={players[myId || '']?.color || 'red'} isLocal={!localPlayerRef.current?.isWalking} drifting={localPlayerRef.current?.drifting && !localPlayerRef.current?.isWalking} />
+        <CarModel 
+            color={players[myId || '']?.color || 'red'} 
+            isLocal={!localPlayerRef.current?.isWalking} 
+            drifting={localPlayerRef.current?.drifting && !localPlayerRef.current?.isWalking}
+            powerUp={players[myId || '']?.activePowerUp}
+        />
       </group>
       <group ref={charRef} visible={false}>
         <CharacterModel color={players[myId || '']?.color || 'red'} />
@@ -552,7 +1577,7 @@ const GameScene = ({
         return (
           <React.Fragment key={p.id}>
             <group position={[carX, carH, carY]} rotation={[0, -(p.isWalking ? p.carAngle : p.angle) + Math.PI/2, 0]}>
-              <CarModel color={p.color} drifting={p.drifting && !p.isWalking} />
+              <CarModel color={p.color} drifting={p.drifting && !p.isWalking} powerUp={p.activePowerUp} />
               {!p.isWalking && (
                 <Text position={[0, 3, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle">
                   {p.name}
@@ -648,6 +1673,68 @@ export default function GameCanvas({
   setSettings?: React.Dispatch<React.SetStateAction<any>>,
   isSinglePlayer?: boolean
 }) {
+  const [weather, setWeather] = useState<'clear' | 'rain' | 'fog'>('clear');
+
+  // Weather cycle
+  useEffect(() => {
+    const weathers: ('clear' | 'rain' | 'fog')[] = ['clear', 'rain', 'fog'];
+    let i = 0;
+    const interval = setInterval(() => {
+      i = (i + 1) % weathers.length;
+      setWeather(weathers[i]);
+    }, 30000); // Change weather every 30 seconds
+    return () => clearInterval(interval);
+  }, []);
+
+  const [powerUps, setPowerUps] = useState<PowerUp[]>([]);
+
+  const [props, setProps] = useState<InteractiveProp[]>([
+    { id: 1, type: 'barrier', x: 650, y: 700, rotation: 0, active: true, health: 100 },
+    { id: 2, type: 'barrier', x: 600, y: 700, rotation: 0, active: true, health: 100 },
+    { id: 3, type: 'ramp', x: 750, y: 750, rotation: Math.PI, active: true, health: 100 },
+    { id: 4, type: 'crate', x: 800, y: 425, rotation: 0, active: true, health: 100 },
+    { id: 5, type: 'crate', x: 810, y: 430, rotation: 0.5, active: true, health: 100 },
+    { id: 6, type: 'barrier', x: 900, y: 150, rotation: Math.PI/2, active: true, health: 100 },
+    { id: 7, type: 'ramp', x: 250, y: 100, rotation: 0, active: true, health: 100 },
+  ]);
+
+  // Initialize PowerUps
+  useEffect(() => {
+    const initialPowerUps: PowerUp[] = [];
+    for (let i = 0; i < 10; i++) {
+        const segment = TRACK_SEGMENTS[Math.floor(Math.random() * TRACK_SEGMENTS.length)];
+        const t = Math.random();
+        const x = segment.start.x + (segment.end.x - segment.start.x) * t;
+        const y = segment.start.y + (segment.end.y - segment.start.y) * t;
+        
+        // Offset slightly from center
+        const angle = segment.angle + Math.PI/2;
+        const offset = (Math.random() - 0.5) * TRACK_WIDTH * 0.05;
+        
+        initialPowerUps.push({
+            id: `pu-${i}`,
+            type: Math.random() > 0.6 ? 'speed' : Math.random() > 0.5 ? 'shield' : 'multiplier',
+            x: x + Math.cos(angle) * offset,
+            y: y + Math.sin(angle) * offset,
+            active: true
+        });
+    }
+    setPowerUps(initialPowerUps);
+  }, []);
+
+  // Respawn PowerUps
+  useEffect(() => {
+    const interval = setInterval(() => {
+        setPowerUps(prev => prev.map(pu => {
+            if (!pu.active && Math.random() > 0.7) {
+                return { ...pu, active: true };
+            }
+            return pu;
+        }));
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Sound Effects
   const { play: playEngine, stop: stopEngine, setVolume: setEngineVolume } = useSound('/sounds/engine_loop.mp3', { loop: true, volume: 0.3 * (settings.volume / 100) });
   const { play: playDrift, stop: stopDrift, setVolume: setDriftVolume } = useSound('/sounds/drift.mp3', { volume: 0.7 * (settings.volume / 100) });
@@ -763,6 +1850,13 @@ export default function GameCanvas({
     targetZoneIndex: number;
     z: number;
     vz: number;
+    activePowerUp?: PowerUpType;
+    powerUpEndTime?: number;
+    roll: number;
+    pitch: number;
+    suspensionY: number;
+    rollVelocity: number;
+    pitchVelocity: number;
   }>({
     x: 660,
     y: 750,
@@ -785,6 +1879,13 @@ export default function GameCanvas({
     targetZoneIndex: 0,
     z: 0,
     vz: 0,
+    activePowerUp: undefined,
+    powerUpEndTime: undefined,
+    roll: 0,
+    pitch: 0,
+    suspensionY: 0,
+    rollVelocity: 0,
+    pitchVelocity: 0
   });
 
   // Initialize local player position from props if available
@@ -804,8 +1905,37 @@ export default function GameCanvas({
       }
   }, [myId]); // Run once when ID is confirmed
 
+  // Ambient Sound Logic
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!localPlayer.current) return;
+      
+      const p = localPlayer.current;
+      const maxVol = settings.volume / 100;
+      
+      // Calculate distance from city center (approx 600, 400)
+      const dist = Math.hypot(p.x - 600, p.y - 400);
+      
+      // City Volume: High near center, fades out by 1200 units
+      const cityMix = Math.max(0, 1 - dist / 1200);
+      setCityVolume(cityMix * 0.2 * maxVol);
+      
+      // Nature Volume: Low near center, fades in fully by 800 units
+      const natureMix = Math.min(1, dist / 800);
+      setNatureVolume(natureMix * 0.25 * maxVol);
+      
+      // Wind Volume: Based on speed and weather
+      let windMix = Math.abs(p.speed) / 2.0; // Speed factor
+      if (weather !== 'clear') windMix += 0.3; // Weather factor
+      setWindVolume(Math.min(1, windMix) * 0.4 * maxVol);
+      
+    }, 200);
+    
+    return () => clearInterval(interval);
+  }, [settings.volume, weather, setCityVolume, setNatureVolume, setWindVolume]);
+
   // Particle System
-  const [particles, setParticles] = useState<{id: number, x: number, y: number, life: number}[]>([]);
+  const [particles, setParticles] = useState<{id: number, x: number, y: number, life: number, color: string, size: number}[]>([]);
   const particleIdCounter = useRef(0);
 
   useEffect(() => {
@@ -1028,26 +2158,37 @@ export default function GameCanvas({
           }
           setEngineVolume(Math.min(1, 0.3 + Math.abs(p.speed) / MAX_SPEED * 0.7));
 
-          // Acceleration
+          // Acceleration & Longitudinal Physics
+          let targetPitch = 0;
           if (p.keys['ArrowUp'] || p.keys['KeyW']) {
-            p.speed += ACCELERATION;
+            p.speed += ACCELERATION * TIRE_GRIP_LONGITUDINAL;
+            targetPitch = -0.15; // Nose up
           } else if (p.keys['ArrowDown'] || p.keys['KeyS']) {
-            p.speed -= ACCELERATION;
+            p.speed -= ACCELERATION * TIRE_GRIP_LONGITUDINAL;
+            targetPitch = 0.15; // Nose down
           } else {
             p.speed *= FRICTION;
+            targetPitch = 0;
           }
+
+          // Spring-Damper for Pitch
+          const pitchForce = (targetPitch - p.pitch) * PITCH_STIFFNESS;
+          p.pitchVelocity += pitchForce;
+          p.pitchVelocity *= 0.9; // Damping
+          p.pitch += p.pitchVelocity;
 
           // Nitro
           if ((p.keys['ShiftLeft'] || p.keys['ShiftRight']) && p.nitro > 0) {
               p.speed += NITRO_ACCEL;
               p.nitro = Math.max(0, p.nitro - 1);
               playNitro();
+              p.pitchVelocity -= 0.02; // Kick nose up
           } else {
               p.nitro = Math.min(100, p.nitro + 0.2);
           }
           setNitro(p.nitro);
 
-          // Drifting Logic
+          // Drifting & Lateral Physics
           const isTurning = p.keys['ArrowLeft'] || p.keys['KeyA'] || p.keys['ArrowRight'] || p.keys['KeyD'];
           const wantsDrift = p.keys['Space'];
           
@@ -1078,14 +2219,24 @@ export default function GameCanvas({
           }
           if (p.speed < -MAX_SPEED / 2) p.speed = -MAX_SPEED / 2;
 
-          // Turning
+          // Turning & Roll Physics
+          let targetRoll = 0;
           if (Math.abs(p.speed) > 0.1) {
-            let turn = TURN_SPEED * (p.speed / MAX_SPEED);
+            // Non-linear steering response for better low-speed handling
+            const speedRatio = Math.abs(p.speed) / MAX_SPEED;
+            // Boost turning at low speeds (min 40% effectiveness)
+            const steeringSensitivity = Math.max(0.4, Math.min(1.0, speedRatio + 0.1));
+            
+            let turn = TURN_SPEED * steeringSensitivity;
+            
+            // Reverse steering when reversing
+            if (p.speed < 0) turn = -turn;
             
             if (p.drifting) {
-                turn *= 2.2; // Much sharper turning while drifting
-                p.speed *= 0.99; // Less speed loss while drifting
-                p.shake = Math.min(p.shake + 0.2, 1.5); // Add shake when drifting
+                turn *= 1.8; // Sharper turning while drifting
+                p.speed *= 0.992; // Maintain more momentum while drifting
+                p.shake = Math.min(p.shake + 0.2, 1.5);
+                targetRoll = (p.keys['ArrowLeft'] || p.keys['KeyA'] ? 0.25 : -0.25); // Exaggerated roll
                 
                 if (Math.random() > 0.5) {
                     setParticles(prev => [
@@ -1094,10 +2245,16 @@ export default function GameCanvas({
                             id: particleIdCounter.current++, 
                             x: p.x + (Math.random() - 0.5) * 2, 
                             y: p.y + (Math.random() - 0.5) * 2, 
-                            life: 1.0
+                            life: 1.0,
+                            color: '#e5e7eb', // Light gray smoke
+                            size: 1.5
                         }
                     ]);
                 }
+            } else {
+                // Normal turning roll based on centripetal force approx
+                const lateralG = turn * p.speed; 
+                targetRoll = (p.keys['ArrowLeft'] || p.keys['KeyA'] ? 0.1 : p.keys['ArrowRight'] || p.keys['KeyD'] ? -0.1 : 0) * (Math.abs(p.speed) / MAX_SPEED);
             }
 
             if (p.keys['ArrowLeft'] || p.keys['KeyA']) {
@@ -1108,6 +2265,29 @@ export default function GameCanvas({
             }
           }
 
+          // Nitro Particles
+          if (isNitroActive && Math.random() > 0.3) {
+               const offsetX = Math.cos(p.angle + Math.PI) * 2.5;
+               const offsetY = Math.sin(p.angle + Math.PI) * 2.5;
+               setParticles(prev => [
+                   ...prev,
+                   {
+                       id: particleIdCounter.current++,
+                       x: p.x + offsetX + (Math.random() - 0.5),
+                       y: p.y + offsetY + (Math.random() - 0.5),
+                       life: 0.6,
+                       color: Math.random() > 0.5 ? '#3b82f6' : '#f97316', // Blue/Orange flame
+                       size: 0.8
+                   }
+               ]);
+          }
+
+          // Spring-Damper for Roll
+          const rollForce = (targetRoll - p.roll) * ROLL_STIFFNESS;
+          p.rollVelocity += rollForce;
+          p.rollVelocity *= 0.9; // Damping
+          p.roll += p.rollVelocity;
+
           p.x += Math.cos(p.angle) * p.speed;
           p.y += Math.sin(p.angle) * p.speed;
           
@@ -1115,18 +2295,29 @@ export default function GameCanvas({
           p.carY = p.y;
           p.carAngle = p.angle;
           
-          // Vertical Physics (Air/Jumps)
+          // Vertical Physics (Suspension)
           const terrainH = getTerrainHeight(p.x, p.y);
           p.vz -= GRAVITY;
           p.z += p.vz;
           
-          // Ground Collision
-          if (p.z <= terrainH) {
-              p.z = terrainH;
-              p.vz = 0;
+          // Advanced Suspension Logic
+          if (p.z <= terrainH + SUSPENSION_REST_LENGTH) {
+              const compression = (terrainH + SUSPENSION_REST_LENGTH) - p.z;
+              const springForce = compression * SUSPENSION_STIFFNESS;
+              const dampingForce = -p.vz * SUSPENSION_DAMPING;
               
+              p.vz += springForce + dampingForce;
+              
+              // Hard floor collision
+              if (p.z < terrainH) {
+                  p.z = terrainH;
+                  p.vz = Math.max(0, p.vz); // Stop downward velocity
+                  p.speed *= 0.95; // Friction from bottoming out
+              }
+              
+              p.suspensionY = -compression * 0.5; // Visual offset
+
               // Ramp / Jump Logic
-              // Look ahead to see if we are hitting a ramp
               const lookAhead = 15;
               const nextX = p.x + Math.cos(p.angle) * lookAhead;
               const nextY = p.y + Math.sin(p.angle) * lookAhead;
@@ -1134,8 +2325,25 @@ export default function GameCanvas({
               const slope = nextH - terrainH;
               
               if (slope > 2 && p.speed > 1.5) {
-                  // Launch off the ramp
-                  p.vz = Math.min(slope * 0.15 * p.speed, 3.0);
+                  p.vz += Math.min(slope * 0.25 * p.speed, 5.0); // Stronger launch
+                  p.pitchVelocity -= 0.05; // Kick nose up slightly on launch
+              }
+          } else {
+              p.suspensionY = THREE.MathUtils.lerp(p.suspensionY, 0, 0.1);
+              
+              // Air Control
+              if (p.z > terrainH + 5) {
+                  // Pitch Control
+                  if (p.keys['ArrowUp'] || p.keys['KeyW']) p.pitchVelocity -= 0.02;
+                  if (p.keys['ArrowDown'] || p.keys['KeyS']) p.pitchVelocity += 0.02;
+                  
+                  // Roll Control
+                  if (p.keys['ArrowLeft'] || p.keys['KeyA']) p.rollVelocity += 0.02;
+                  if (p.keys['ArrowRight'] || p.keys['KeyD']) p.rollVelocity -= 0.02;
+                  
+                  // Yaw Control (Mid-air turning)
+                  if (p.keys['ArrowLeft'] || p.keys['KeyA']) p.angle += 0.03;
+                  if (p.keys['ArrowRight'] || p.keys['KeyD']) p.angle -= 0.03;
               }
           }
       }
@@ -1187,6 +2395,60 @@ export default function GameCanvas({
           }
       }
 
+      // Prop Collision
+      setProps(prevProps => prevProps.map(prop => {
+          if (!prop.active) return prop;
+          
+          const dx = p.x - prop.x;
+          const dy = p.y - prop.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          
+          if (dist < 3.0) {
+              if (prop.type === 'barrier' || prop.type === 'crate') {
+                  // Breakable
+                  if (Math.abs(p.speed) > 1.5) { // Lower threshold for breaking
+                      playCollision();
+                      p.shake = 4.0; // More shake
+                      p.speed *= 0.7; // Impact slowdown
+                      
+                      // Spawn debris particles
+                      setParticles(prev => {
+                          const newParts = [];
+                          for(let i=0; i<12; i++) { // More particles
+                              newParts.push({
+                                  id: particleIdCounter.current++,
+                                  x: prop.x + (Math.random()-0.5)*3,
+                                  y: prop.y + (Math.random()-0.5)*3,
+                                  life: 1.2,
+                                  color: prop.type === 'barrier' ? '#ef4444' : '#d97706',
+                                  size: 1.2
+                              });
+                          }
+                          return [...prev, ...newParts];
+                      });
+                      
+                      return { ...prop, active: false };
+                  } else {
+                      // Solid collision (low speed)
+                      const angle = Math.atan2(dy, dx);
+                      p.x += Math.cos(angle) * 1.0; // Push back harder
+                      p.y += Math.sin(angle) * 1.0;
+                      p.speed *= -0.4;
+                      playCollision();
+                      p.shake = 1.5;
+                  }
+              } else if (prop.type === 'ramp') {
+                  // Jump!
+                  if (Math.abs(p.speed) > 2.0) {
+                      p.vz = 1.5; // Launch
+                      p.pitchVelocity = -0.1; // Nose up
+                      playNitro(); // Sound effect
+                  }
+              }
+          }
+          return prop;
+      }));
+
       // Update Particles
       setParticles(prev => prev.map(pt => ({...pt, life: pt.life - 0.05})).filter(pt => pt.life > 0));
 
@@ -1207,20 +2469,65 @@ export default function GameCanvas({
 
       // Track Collision (Off-track logic)
       if (Math.sqrt(minD2) > TRACK_RADIUS) {
-        // Off-track: Apply heavy friction/slowdown instead of hard wall
-        p.speed *= 0.85; // Rapidly slow down
+        // Off-track: Apply friction but allow driving
+        p.speed *= 0.98; // Slight drag
         
-        // Cap max speed on grass
-        if (p.speed > 1.0) p.speed = 1.0;
-        if (p.speed < -0.5) p.speed = -0.5;
-
+        // Remove hard speed cap to allow exploration
+        
         p.drifting = false; // Harder to drift on grass
         
-        if (Math.abs(p.speed) > 0.5) {
-            p.shake = Math.min(p.shake + 0.5, 2.5); // Add shake when off-track
+        if (Math.abs(p.speed) > 2.0) {
+            p.shake = Math.min(p.shake + 0.2, 1.5); // Add shake when off-track
             // Play collision sound with rate limiting
-            if (Math.random() > 0.9) playCollision();
+            if (Math.random() > 0.95) playCollision();
         }
+      }
+
+      // Decoration Collision (Trees, Rocks, etc.)
+      for (const deco of DECORATIONS) {
+          // Fast AABB check first
+          if (Math.abs(p.x - deco.pos[0]) > 20 || Math.abs(p.y - deco.pos[2]) > 20) continue;
+
+          const dx = p.x - deco.pos[0];
+          const dy = p.y - deco.pos[2];
+          const distSq = dx*dx + dy*dy;
+          const radiusSum = deco.radius + 1.5;
+          
+          if (distSq < radiusSum * radiusSum) {
+              const dist = Math.sqrt(distSq);
+              // Solid collision
+              const angle = Math.atan2(dy, dx);
+              const overlap = radiusSum - dist;
+              
+              // Push back
+              p.x += Math.cos(angle) * overlap;
+              p.y += Math.sin(angle) * overlap;
+              
+              // Bounce
+              if (Math.abs(p.speed) > 1.0) {
+                  p.speed *= -0.5;
+                  playCollision();
+                  p.shake = 3.0;
+                  
+                  // Debris
+                  setParticles(prev => {
+                      const newParts = [];
+                      for(let i=0; i<5; i++) {
+                          newParts.push({
+                              id: particleIdCounter.current++,
+                              x: p.x + (Math.random()-0.5)*2,
+                              y: p.y + (Math.random()-0.5)*2,
+                              life: 0.8,
+                              color: '#57534e',
+                              size: 1.0
+                          });
+                      }
+                      return [...prev, ...newParts];
+                  });
+              } else {
+                  p.speed = 0;
+              }
+          }
       }
 
       // Car-to-Car Collision
@@ -1229,53 +2536,40 @@ export default function GameCanvas({
           const dx = p.x - other.x;
           const dy = p.y - other.y;
           const dist = Math.sqrt(dx*dx + dy*dy);
-          if (dist < 3.0) { // Collision radius
-              // Simple elastic collision response
+          if (dist < 3.5) { // Increased collision radius
+              // Elastic collision response
               const angle = Math.atan2(dy, dx);
-              const force = 0.5;
+              const force = 1.5; // Stronger bounce
+              
               p.x += Math.cos(angle) * force;
               p.y += Math.sin(angle) * force;
-              p.speed *= -0.5; // Bounce back
+              
+              // Transfer momentum
+              p.speed *= -0.6; 
+              
               playCollision();
-              p.shake = 2.0;
+              p.shake = 5.0; // Heavy shake
+              
+              // Spawn sparks
+              setParticles(prev => {
+                  const newParts = [];
+                  for(let i=0; i<8; i++) {
+                      newParts.push({
+                          id: particleIdCounter.current++,
+                          x: p.x + (Math.random()-0.5)*2,
+                          y: p.y + (Math.random()-0.5)*2,
+                          life: 0.8,
+                          color: '#f59e0b', // Orange sparks
+                          size: 0.6
+                      });
+                  }
+                  return [...prev, ...newParts];
+              });
           }
       });
 
-      // Checkpoint Logic
-      // Define checkpoints as segments or zones
-      // 0: Start/Finish (625, 750)
-      // 1: Top Right (1100, 150)
-      // 2: Bottom Left (150, 750)
-      
-      const checkpoints = [
-          { x: 625, y: 750, r: 40 }, // Start/Finish
-          { x: 1100, y: 150, r: 40 }, // Checkpoint 1
-          { x: 150, y: 750, r: 40 }   // Checkpoint 2
-      ];
-      
-      checkpoints.forEach((cp, i) => {
-          const dx = p.x - cp.x;
-          const dy = p.y - cp.y;
-          const dist = Math.sqrt(dx*dx + dy*dy);
-          
-          if (dist < cp.r) {
-              if (p.checkpoint !== i) {
-                  // Only trigger if moving forward through checkpoints
-                  const nextCp = (p.checkpoint + 1) % checkpoints.length;
-                  if (i === nextCp) {
-                      p.checkpoint = i;
-                      if (i === 0) {
-                          // Lap Complete
-                          p.lapCount++;
-                          playLapComplete();
-                          addLog(`Lap ${p.lapCount} Complete!`, 'text-purple-400');
-                      } else {
-                          playCheckpoint();
-                      }
-                  }
-              }
-          }
-      });
+      // Checkpoint Logic Removed
+
 
       // Delivery Logic (Multiplayer Only - Single Player Handled Above)
       if (!isSinglePlayer) {
@@ -1395,10 +2689,17 @@ export default function GameCanvas({
   return (
     <div className="relative w-full h-full bg-slate-900 overflow-hidden">
       <Canvas shadows>
-        <color attach="background" args={['#0f172a']} />
+        <WeatherSystem weather={weather} />
         <PerspectiveCamera makeDefault position={[0, 50, 50]} fov={60} far={1000} />
-        <fog attach="fog" args={['#0f172a', 100, 900]} />
-        <GameScene localPlayerRef={localPlayer} players={players} myId={myId} showCompass={settings.showCompass} freeCam={freeCam} />
+        <GameScene 
+            localPlayerRef={localPlayer} 
+            players={players} 
+            myId={myId} 
+            showCompass={settings.showCompass} 
+            freeCam={freeCam}
+            powerUps={powerUps}
+            props={props}
+        />
         
         <EffectComposer>
             <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.9} height={300} intensity={0.5} />
@@ -1407,9 +2708,9 @@ export default function GameCanvas({
         
         {/* Particles */}
         {particles.map(pt => (
-            <mesh key={pt.id} position={[pt.x, getTerrainHeight(pt.x, pt.y) + 2, pt.y]} rotation={[-Math.PI/2, 0, 0]}>
-                <planeGeometry args={[1.5 * pt.life, 1.5 * pt.life]} />
-                <meshBasicMaterial color="#888" transparent opacity={0.4 * pt.life} />
+            <mesh key={pt.id} position={[pt.x, getTerrainHeight(pt.x, pt.y) + 1.5, pt.y]} rotation={[-Math.PI/2, 0, 0]}>
+                <planeGeometry args={[pt.size * pt.life, pt.size * pt.life]} />
+                <meshBasicMaterial color={pt.color} transparent opacity={0.6 * pt.life} depthWrite={false} />
             </mesh>
         ))}
 
